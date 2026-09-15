@@ -3420,6 +3420,7 @@ h1 {
 .tally-mapping select { min-height:42px;padding:0 10px;border:1px solid #4c3b20;background:#050301;color:#fff;color-scheme:dark;font:inherit;font-size:.8rem; }
 .tally-mapping button { min-height:40px;margin-top:13px;padding:0 13px;border:1px solid #6a522c;background:#fff;color:#000;font:inherit;font-size:.78rem;font-weight:700;cursor:pointer; }
 .tally-mapping button:disabled { opacity:.45;cursor:not-allowed; }
+.tally-mapping .ai-map-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:8px}.tally-mapping .ai-map-head>div{margin:0}.tally-mapping .ai-map-head button{display:inline-flex;align-items:center;gap:7px;margin:0;white-space:nowrap}.tally-mapping .ai-map-head button svg{width:16px;height:16px}.ai-map-note{margin:0 0 14px;color:#b6a27f;font-size:.8rem;line-height:1.55}.tally-mapping label>span small{display:block;margin-top:5px;white-space:normal;font-size:.72rem;line-height:1.4}.tally-mapping label>span small.high{color:#8fd5a6}.tally-mapping label>span small.review{color:#d3aa6c}
 .tally-voucher-list { max-height:480px;margin-bottom:18px;overflow:auto;scrollbar-width:thin; }
 .tally-voucher-list>article { display:grid;grid-template-columns:30px 1fr auto;gap:13px;align-items:start;padding:16px 4px;border-bottom:1px solid #242424; }
 .tally-status { width:26px;height:26px;display:grid;place-items:center;border:1px solid #333;border-radius:50%; }
@@ -3475,6 +3476,7 @@ h1 {
   .tally-voucher-list>article { grid-template-columns:28px 1fr; }
   .tally-voucher-list>article>b { grid-column:2; }
   .tally-mapping label { grid-template-columns:1fr;gap:7px; }
+  .tally-mapping .ai-map-head{align-items:stretch;flex-direction:column}.tally-mapping .ai-map-head button{justify-content:center}
 }
 /* Tally connection controls follow Commons' black working surfaces. */
 .bridge-instructions { padding-left: 1.4rem; line-height: 1.7; }

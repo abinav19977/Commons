@@ -24,6 +24,13 @@ test("Copilot verifies keys through Responses API with timeout and confirmation 
   assert.match(assistant, /approve every financial change/i);
 });
 
+test("Tally AI mapping is structured, conservative and review-only",()=>{
+  const route=readFileSync("app/api/integrations/tally/suggest-mappings/route.ts","utf8");
+  const workspace=readFileSync("app/integrations/tally/tally-workspace.tsx","utf8");
+  assert.match(route,/json_schema/);assert.match(route,/conservative Indian accounting/);assert.match(route,/confidence/);
+  assert.match(workspace,/AI suggest mappings/);assert.match(workspace,/confidence>=85/);assert.match(workspace,/Suggestions never import or post entries/);
+});
+
 test("empty accounting controls do not invent audit or inventory records", () => {
   assert.doesNotMatch(readFileSync("app/accounts/controls/page.tsx", "utf8"), /demo-audit/);
   assert.doesNotMatch(readFileSync("app/accounts/inventory/page.tsx", "utf8"), /demo-batch|demo-rice|demo-main/);
