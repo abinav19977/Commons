@@ -2,7 +2,7 @@ import { getRawDb } from "../../db";
 import { assertPeriodOpen,prepareJournal } from "./book-server";
 import { digest } from "./tally-bridge";
 import { parseTallyVouchers } from "./tally";
-import { children,documentFromNode,descendants,parseXml,value,type TallyDocument } from "./tally-document";
+import { documentFromNode,descendants,parseXml,type TallyDocument } from "./tally-document";
 
 type Prior={id:string;revision:string;payload:string;local_id:string|null;journal_id:string|null};
 export async function prepareConnectedImport(owner:string,actor:string,xml:string,mappings:Record<string,string>={}){

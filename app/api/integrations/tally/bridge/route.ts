@@ -50,7 +50,7 @@ export async function POST(request:Request){
   const amountPaise=party?Math.abs(scaled(value(party,"AMOUNT"))):ledgers.reduce((sum,l)=>sum+Math.max(0,-scaled(value(l,"AMOUNT"))),0);
   candidates.push({key,label:xmlTag(block,"VOUCHERNUMBER"),date:xmlTag(block,"DATE"),amountPaise,digest:await digest(xml),xml});
  }
- if(body.action==="preview")return NextResponse.json({vouchers:candidates.map(({xml,...v})=>v)});
+ if(body.action==="preview")return NextResponse.json({vouchers:candidates.map(v=>({key:v.key,label:v.label,date:v.date,amountPaise:v.amountPaise,digest:v.digest}))});
  if(body.confirmation!=="SEND TO TALLY"||!Array.isArray(body.reviewed))return reply("Review the vouchers before approving the transfer.");
  const reviewed=body.reviewed;
  const selected=candidates.filter(c=>reviewed.some(r=>r&&typeof r==="object"&&r.key===c.key&&r.digest===c.digest));

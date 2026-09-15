@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { Eye, EyeOff, KeyRound, ShieldCheck, Trash2 } from "lucide-react";
+import { companyFetch } from "../company-fetch";
 
 const storageKey = "commons.llm.session";
 
@@ -12,22 +13,25 @@ export default function ApiSettings() {
   const [connected, setConnected] = useState(false);
   const [message, setMessage] = useState("");
   useEffect(() => {
-    try {
+    const timer=setTimeout(()=>{try {
       const saved = sessionStorage.getItem(storageKey);
       if (!saved) return;
       const value = JSON.parse(saved) as { provider?: string; apiKey?: string };
-      if (value.apiKey) {
-        setProvider(value.provider || "openai");
-        setApiKey(value.apiKey);
-        setConnected(true);
-      }
-    } catch { sessionStorage.removeItem(storageKey); }
+      if (value.apiKey) {setProvider(value.provider || "openai");setApiKey(value.apiKey);setConnected(true);}
+    } catch { sessionStorage.removeItem(storageKey); }},0);
+    return ()=>clearTimeout(timer);
   }, []);
-  function save(event: FormEvent) {
+  async function save(event: FormEvent) {
     event.preventDefault();
     if (apiKey.trim().length < 20) { setMessage("Enter a valid API key."); return; }
-    sessionStorage.setItem(storageKey, JSON.stringify({ provider, apiKey: apiKey.trim() }));
-    setConnected(true); setMessage("Connected for this browser session. Commons Copilot can now answer open-ended questions.");
+    setMessage("Checking the connection…");
+    try{
+      const response=await companyFetch("/api/assistant",{method:"POST",headers:{"content-type":"application/json","x-commons-ai-key":apiKey.trim()},body:JSON.stringify({question:"Reply only with: Connection verified.",context:"settings"})});
+      const body=await response.json().catch(()=>({})) as {answer?:string;message?:string};
+      if(!response.ok){setConnected(false);setMessage(body.message||"The key could not be verified.");return}
+      sessionStorage.setItem(storageKey, JSON.stringify({ provider, apiKey: apiKey.trim() }));
+      setConnected(true); setMessage("Connection verified for this browser session. Commons Copilot can answer open-ended questions.");
+    }catch{setConnected(false);setMessage("Commons could not reach OpenAI. Check your connection and try again.")}
   }
   function remove() {
     sessionStorage.removeItem(storageKey); setApiKey(""); setConnected(false); setMessage("AI connection removed from this browser.");
@@ -40,6 +44,6 @@ export default function ApiSettings() {
       {message && <p className={connected ? "form-success" : "form-error"}>{message}</p>}
       <div className="settings-actions"><button className="submit-button" disabled={!apiKey}>Connect Copilot</button>{connected && <button className="secondary-button" type="button" onClick={remove}><Trash2/>Remove key</button>}</div>
     </form>
-    <p className="professional-note">Copilot can explain and prepare workflows. Financial entries, reminders and filings still require your confirmation; statutory work requires accountant review.</p>
+    <p className="professional-note">Use a project API key from your OpenAI API account. A ChatGPT subscription alone does not supply an API key. Copilot can explain and prepare workflows; financial entries, reminders and filings still require your confirmation.</p>
   </section>;
 }

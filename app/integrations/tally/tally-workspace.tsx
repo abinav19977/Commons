@@ -4,7 +4,7 @@ import LiveBridge from "./live-bridge";
 import { companyFetch } from "@/app/company-fetch";
 
 import { ChangeEvent, useState } from "react";
-import { AlertTriangle, Check, Download, FileCheck2, Link2, RefreshCw, Upload, X } from "lucide-react";
+import { AlertTriangle, Check, Download, FileCheck2, RefreshCw, Upload, X } from "lucide-react";
 
 type PreviewVoucher = { key: string; date: string; type: string; number: string; narration: string; amountPaise: number; status: "ready" | "needs_mapping" | "duplicate"; issues: string[] };
 type Preview = { total: number; ready: number; needsMapping: number; duplicates: number; vouchers: PreviewVoucher[] };

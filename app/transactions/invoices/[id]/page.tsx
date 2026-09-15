@@ -41,6 +41,11 @@ const money = (p: number) =>
     currency: "INR",
     minimumFractionDigits: 2,
   }).format(p / 100);
+type BusinessProfileView = {
+  legalName:string;tradeName:string|null;gstin:string|null;pan:string|null;phone:string|null;email:string|null;
+  addressLine1:string|null;addressLine2:string|null;city:string|null;state:string|null;pinCode:string|null;
+  bankName:string|null;accountName:string|null;accountNumber:string|null;ifsc:string|null;terms:string|null;
+};
 async function Invoice({ id }: { id: string }) {
   const user = await requireChatGPTUser(
     "/transactions/invoices/" + encodeURIComponent(id),
@@ -48,7 +53,7 @@ async function Invoice({ id }: { id: string }) {
   let invoice: InvoiceView | null =
     demoInvoices.find((item) => item.id === id) || null;
   let items: InvoiceItemView[] = demoInvoiceItemsById[id] || [];
-  let profile: any = invoice
+  let profile: BusinessProfileView | null = invoice
     ? {
         legalName: "Commons Supply Co.",
         tradeName: "Commons Supply",

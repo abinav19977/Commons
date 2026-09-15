@@ -5,7 +5,7 @@ import { getDb } from "../../../../db";
 import { purchases } from "../../../../db/schema";
 import { chatGPTSignOutPath, requireChatGPTUser } from "../../../company-auth";
 import CommonsAssistant from "../../../components/commons-assistant";
-import { demoProducts, type ProductView } from "../../../products/product-data";
+import { type ProductView } from "../../../products/product-data";
 import { listProducts } from "../../../products/product-store";
 import { demoSuppliers, type SupplierView } from "../../supplier-data";
 import { findSupplier } from "../../supplier-store";

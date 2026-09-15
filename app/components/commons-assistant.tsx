@@ -76,7 +76,8 @@ export default function CommonsAssistant({ context }: { context: Context }) {
       return;
     }
     setBusy(true);
-    let answer = "I can prepare bills, purchases, receipts, payroll, GST reviews and reports. For open-ended questions, add an AI API key in Settings.";
+    let answer = "I can prepare bills, purchases, receipts, payroll, GST reviews and reports. For open-ended questions, connect an OpenAI API key in Settings.";
+    let needsSettings = true;
     try {
       const saved = sessionStorage.getItem("commons.llm.session");
       const key = saved ? (JSON.parse(saved) as { apiKey?: string }).apiKey : "";
@@ -88,10 +89,11 @@ export default function CommonsAssistant({ context }: { context: Context }) {
         });
         const body = await response.json().catch(() => ({})) as { answer?: string; message?: string };
         answer = response.ok && body.answer ? body.answer : body.message || answer;
+        needsSettings = !response.ok;
       }
     } catch { /* retain the safe local answer */ }
     setBusy(false);
-    setMessages((current) => [...current, { role: "assistant", text: answer, action: { label: "AI settings", href: "/settings" } }]);
+    setMessages((current) => [...current, { role: "assistant", text: answer, action: needsSettings ? { label: "AI settings", href: "/settings" } : undefined }]);
   }
   function submit(event: FormEvent) { event.preventDefault(); ask(input); }
   return <>

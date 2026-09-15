@@ -32,23 +32,13 @@ const money = (p: number) =>
     currency: "INR",
     maximumFractionDigits: 0,
   }).format(p / 100);
-const demo = {
-  id: "demo-purchase",
-  supplierId: "demo-green-loom",
-  purchaseNumber: "PUR-2026-014",
-  supplierName: "Green Loom Textiles",
-  supplierInvoiceNumber: "GLT-8821",
-  purchaseDate: "2026-09-02",
-  totalPaise: 2231250,
-  status: "received",
-};
 export default async function History({ searchParams }: PageProps) {
   const user = await requireChatGPTUser("/purchases/existing");
   const params = await searchParams;
   const savedNumber = Array.isArray(params.saved)
     ? params.saved[0]
     : params.saved;
-  let rows: any[] = [];
+  let rows: Array<typeof purchases.$inferSelect> = [];
   try {
     rows = await getDb()
       .select()

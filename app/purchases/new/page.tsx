@@ -4,7 +4,6 @@ import { getDb } from "../../../db";
 import { purchaseItems, purchases } from "../../../db/schema";
 import { chatGPTSignOutPath, requireChatGPTUser } from "../../company-auth";
 import CommonsAssistant from "../../components/commons-assistant";
-import { demoProducts } from "../../products/product-data";
 import { listProducts } from "../../products/product-store";
 import { demoSuppliers, type SupplierView } from "../supplier-data";
 import { findSupplier } from "../supplier-store";

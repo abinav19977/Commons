@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { parseXml,descendants,value } from "../../../../lib/tally-document";
 import { getRawDb } from "../../../../../db";
-import { authenticateBridge,digest,xmlTag,voucherBlocks,readBoundedJson } from "../../../../lib/tally-bridge";
+import { authenticateBridge,digest,voucherBlocks,readBoundedJson } from "../../../../lib/tally-bridge";
 const reply=(message:string,status=400)=>NextResponse.json({message},{status});
 // Machine credentials are company-scoped, hashed, expiring and revocable.
 // This endpoint only transports approved outgoing vouchers and an unposted inbox.

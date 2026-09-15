@@ -6,7 +6,6 @@ import {
   requireChatGPTUser,
 } from "../company-auth";
 import {
-  FolderTree,
   ChartNoAxesCombined,
   BellRing,
   Banknote,
@@ -113,8 +112,6 @@ export default async function Home() {
           <nav className="tool-grid" aria-label="Accounts and finance tools">
             {accountsSections.map(({ label, icon: Icon, href }, index) => <a className="tool-tile" href={href} key={label}><span className="tool-number">{String(index+1).padStart(2,"0")}</span><Icon aria-hidden="true" strokeWidth={1.45}/><span className="tool-label">{label}</span></a>)}
           </nav>
-          <div className="universe-heading accounting-universe"><h2>Other tools</h2></div>
-          <nav className="tool-grid" aria-label="Other tools"><a className="tool-tile" href="/tools"><span className="tool-number">01</span><FolderTree aria-hidden="true" strokeWidth={1.45}/><span className="tool-label">Other tools</span></a></nav>
         </section>
         <CommonsAssistant context="dashboard" />
       </main>

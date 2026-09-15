@@ -1,9 +1,8 @@
 import { getRawDb } from "../../db";
 import { chatGPTSignOutPath, requireChatGPTUser } from "../company-auth";
 import CommonsAssistant from "../components/commons-assistant";
-import { demoBusinessProfile } from "../other/business/demo-profile";
 import BankReconciliation from "./bank-reconciliation";
-import { demoBankTransactions, getBankingData, type BankBatchView, type BankTransactionView } from "./banking-data";
+import { getBankingData, type BankBatchView, type BankTransactionView } from "./banking-data";
 
 export const dynamic = "force-dynamic";
 
