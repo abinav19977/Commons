@@ -1,0 +1,20 @@
+export const demoBusinessProfile = {
+  legalName: "Commons Supply Company",
+  tradeName: "Commons Supply",
+  gstin: "29ABCDE1234F1Z5",
+  pan: "ABCDE1234F",
+  phone: "9876543210",
+  email: "billing@commons.example",
+  addressLine1: "12, MG Road",
+  addressLine2: "Central Business District",
+  city: "Bengaluru",
+  state: "Karnataka",
+  pinCode: "560001",
+  bankName: "State Bank of India",
+  accountName: "Commons Supply Company",
+  accountNumber: "12345678901",
+  ifsc: "SBIN0001234",
+  invoicePrefix: "INV",
+  terms:
+    "Payment due within 30 days. Goods once sold will not be returned without approval.",
+};

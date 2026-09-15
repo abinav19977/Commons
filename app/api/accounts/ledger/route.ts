@@ -1,0 +1,6 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { getRawDb } from "../../../../db";
+import { getChatGPTUser } from "../../../company-auth";
+const schema=z.object({name:z.string().trim().min(2).max(100),code:z.string().trim().regex(/^\d{4}$/),category:z.enum(["asset","liability","equity","income","expense"])});
+export async function POST(request:Request){const user=await getChatGPTUser(request);if(!user)return NextResponse.json({message:"Please sign in again."},{status:401});const parsed=schema.safeParse(await request.json().catch(()=>null));if(!parsed.success)return NextResponse.json({message:"Use a unique four-digit code and account name."},{status:400});const d=parsed.data;try{await getRawDb().prepare("INSERT INTO ledger_accounts (id,owner_user_id,code,name,category,normal_side,system_key,active,created_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(crypto.randomUUID(),user.id,d.code,d.name,d.category,d.category==="asset"||d.category==="expense"?"debit":"credit",null,1,Date.now()).run();return NextResponse.json({ok:true},{status:201})}catch(error){console.error("Account save failed",error);return NextResponse.json({message:"That account code is already in use."},{status:409})}}

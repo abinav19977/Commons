@@ -1,0 +1,35 @@
+CREATE TABLE `customers` (
+	`id` text PRIMARY KEY NOT NULL,
+	`owner_user_id` text NOT NULL,
+	`customer_type` text DEFAULT 'business' NOT NULL,
+	`display_name` text NOT NULL,
+	`contact_name` text,
+	`primary_phone` text NOT NULL,
+	`secondary_phone` text,
+	`email` text,
+	`gst_registration_type` text DEFAULT 'unregistered' NOT NULL,
+	`gstin` text,
+	`pan` text,
+	`place_of_supply` text,
+	`billing_address_line_1` text,
+	`billing_address_line_2` text,
+	`billing_city` text,
+	`billing_state` text,
+	`billing_pin_code` text,
+	`shipping_same_as_billing` integer DEFAULT true NOT NULL,
+	`shipping_address_line_1` text,
+	`shipping_address_line_2` text,
+	`shipping_city` text,
+	`shipping_state` text,
+	`shipping_pin_code` text,
+	`credit_days` integer DEFAULT 0 NOT NULL,
+	`credit_limit_paise` integer DEFAULT 0 NOT NULL,
+	`opening_balance_paise` integer DEFAULT 0 NOT NULL,
+	`balance_type` text DEFAULT 'receivable' NOT NULL,
+	`notes` text,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `idx_customers_owner_name` ON `customers` (`owner_user_id`,`display_name`);--> statement-breakpoint
+CREATE UNIQUE INDEX `idx_customers_owner_gstin` ON `customers` (`owner_user_id`,`gstin`);
