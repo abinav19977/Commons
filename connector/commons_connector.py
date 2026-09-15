@@ -52,10 +52,58 @@ def collection_xml(kind, company="", start=None, end=None):
     coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsCollection", "ISMODIFY": "No"})
     ET.SubElement(coll, "TYPE").text = kind
     ET.SubElement(coll, "FETCH").text = "Name,GUID" if kind == "Company" else "Name" if kind == "Ledger" else "*"
+    if kind == "Company":
+        # Company is not a normal master collection in every TallyPrime build.
+        # Native methods make the fields explicit for releases that otherwise
+        # return an empty COMPANY element.
+        ET.SubElement(coll, "NATIVEMETHOD").text = "Name,GUID"
     if start and kind == "Voucher":
         ET.SubElement(coll, "FILTERS").text = "CommonsDates"
         ET.SubElement(message, "SYSTEM", {"TYPE": "Formulae", "NAME": "CommonsDates"}).text = "$Date >= ##SVFromDate AND $Date <= ##SVToDate"
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+def company_collection_xml():
+    """Export the loaded primary-company objects used by Tally's Company table."""
+    root = ET.Element("ENVELOPE")
+    header = ET.SubElement(root, "HEADER")
+    for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Collection"), ("ID", "CommonsCompanies")]:
+        ET.SubElement(header, name).text = value
+    desc = ET.SubElement(ET.SubElement(root, "BODY"), "DESC")
+    variables = ET.SubElement(desc, "STATICVARIABLES")
+    ET.SubElement(variables, "SVEXPORTFORMAT").text = "$$SysName:XML"
+    message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
+    coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsCompanies", "ISMODIFY": "No"})
+    ET.SubElement(coll, "SOURCECOLLECTION").text = "List of Primary Companies"
+    ET.SubElement(coll, "FETCH").text = "Name,GUID"
+    ET.SubElement(coll, "NATIVEMETHOD").text = "Name,GUID"
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+def company_rows(root):
+    """Read company identity from the XML shapes emitted by TallyPrime."""
+    def local(tag):
+        return tag.rsplit("}", 1)[-1].upper()
+    def field(node, names):
+        names = set(names)
+        for key, value in node.attrib.items():
+            if local(key) in names and value and value.strip():
+                return value.strip()
+        for child in node.iter():
+            if child is not node and local(child.tag) in names and child.text and child.text.strip():
+                return child.text.strip()
+        return ""
+    rows = []
+    for node in root.iter():
+        tag = local(node.tag)
+        if tag not in {"COMPANY", "CMPINFO", "COMPANYINFO"}:
+            continue
+        name = field(node, {"NAME", "COMPANYNAME"})
+        if not name and tag == "COMPANY" and len(node) == 0 and node.text:
+            name = node.text.strip()
+        guid = field(node, {"GUID", "COMPANYGUID", "CMPGUID"})
+        if name and guid:
+            rows.append((name, guid))
+    # Preserve Tally's order while removing repeated report/collection nodes.
+    return list(dict.fromkeys(rows))
 
 def identity(voucher):
     return voucher.findtext("GUID") or ""
@@ -124,8 +172,19 @@ class Transport:
             raise ValueError(message) from None
 
     def companies(self):
-        root = self.tally(collection_xml("Company"))
-        return [(item.attrib.get("NAME") or item.findtext("NAME") or "", item.findtext("GUID") or "") for item in root.findall(".//COMPANY")]
+        errors = []
+        for request in (company_collection_xml(), collection_xml("Company")):
+            try:
+                rows = company_rows(self.tally(request))
+                if rows:
+                    return rows
+            except Exception as error:
+                errors.append(str(error))
+        detail = (" Last response: " + errors[-1]) if errors else ""
+        raise ValueError(
+            "Tally is reachable, but it did not return an open company with a stable GUID. "
+            "Open the company at Gateway of Tally, then try again." + detail
+        )
 
     def vouchers(self, company, date):
         root = self.tally(collection_xml("Voucher", company, date, date))

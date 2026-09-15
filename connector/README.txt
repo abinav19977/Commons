@@ -7,7 +7,9 @@ Download Python from https://www.python.org/downloads/windows/ if needed.
 1. Extract this ZIP into a folder. Open Start Commons Connector.cmd.
 2. In TallyPrime enable the HTTP server (normally port 9000), and open the
    company you want to connect. The connector only contacts 127.0.0.1.
-3. Click Find Tally companies in the connector.
+3. Click Find Tally companies in the connector. The connector first reads
+   Tally's loaded Primary Companies collection and then uses a compatibility
+   fallback for older response shapes.
 4. In Commons select your business, open Tally integration > Live sync,
    enter the EXACT discovered Tally name, and generate a connection key.
 5. Paste the key into the connector and select the corresponding company.

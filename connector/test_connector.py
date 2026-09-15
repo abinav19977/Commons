@@ -2,7 +2,7 @@ import hashlib
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
-from commons_connector import Connector, parse_xml, collection_xml, signature, NoRedirect
+from commons_connector import Connector, Transport, parse_xml, collection_xml, company_collection_xml, company_rows, signature, NoRedirect
 
 VOUCHER='<VOUCHER><GUID>voucher-1</GUID><DATE>20260909</DATE><VOUCHERTYPENAME>Journal</VOUCHERTYPENAME><VOUCHERNUMBER>JV-1</VOUCHERNUMBER><ALLLEDGERENTRIES.LIST><LEDGERNAME>Cash</LEDGERNAME><AMOUNT>-100.00</AMOUNT></ALLLEDGERENTRIES.LIST><ALLLEDGERENTRIES.LIST><LEDGERNAME>Sales</LEDGERNAME><AMOUNT>100.00</AMOUNT></ALLLEDGERENTRIES.LIST></VOUCHER>'
 XML='<ENVELOPE><SVCURRENTCOMPANY>My business</SVCURRENTCOMPANY>'+VOUCHER+'</ENVELOPE>'
@@ -76,5 +76,38 @@ class AllocationVerificationTests(unittest.TestCase):
         self.assertNotEqual(signature(ET.fromstring(VOUCHER)),signature(ET.fromstring(VOUCHER.replace('</VOUCHER>','<ISCANCELLED>Yes</ISCANCELLED></VOUCHER>'))))
     def test_money_formatting_alone_does_not_change_signature(self):
         self.assertEqual(signature(ET.fromstring(VOUCHER)),signature(ET.fromstring(VOUCHER.replace('100.00','100.000'))))
+
+class CompanyDiscoveryTests(unittest.TestCase):
+    def test_uses_loaded_primary_company_collection(self):
+        root=ET.fromstring(company_collection_xml())
+        coll=root.find('.//COLLECTION')
+        self.assertEqual(root.findtext('.//ID'),'CommonsCompanies')
+        self.assertEqual(coll.findtext('SOURCECOLLECTION'),'List of Primary Companies')
+        self.assertEqual(coll.findtext('NATIVEMETHOD'),'Name,GUID')
+
+    def test_reads_native_attribute_and_nested_name_shapes(self):
+        native=ET.fromstring('<ENVELOPE><COMPANY NAME="Hari Polipacking"><GUID>guid-one</GUID></COMPANY></ENVELOPE>')
+        nested=ET.fromstring('<ENVELOPE><CMPINFO><COMPANYNAME>Second Firm</COMPANYNAME><COMPANYGUID>guid-two</COMPANYGUID></CMPINFO></ENVELOPE>')
+        name_list=ET.fromstring('<ENVELOPE><COMPANY><NAME.LIST><NAME>Third Firm</NAME></NAME.LIST><GUID.LIST><GUID>guid-three</GUID></GUID.LIST></COMPANY></ENVELOPE>')
+        self.assertEqual(company_rows(native),[('Hari Polipacking','guid-one')])
+        self.assertEqual(company_rows(nested),[('Second Firm','guid-two')])
+        self.assertEqual(company_rows(name_list),[('Third Firm','guid-three')])
+
+    def test_transport_falls_back_to_legacy_company_collection(self):
+        transport=object.__new__(Transport)
+        calls=[]
+        def tally(request):
+            calls.append(request)
+            if len(calls)==1:return ET.fromstring('<ENVELOPE><COLLECTION/></ENVELOPE>')
+            return ET.fromstring('<ENVELOPE><COMPANY NAME="Fallback"><GUID>fallback-guid</GUID></COMPANY></ENVELOPE>')
+        transport.tally=tally
+        self.assertEqual(transport.companies(),[('Fallback','fallback-guid')])
+        self.assertEqual(len(calls),2)
+
+    def test_empty_company_response_is_an_explicit_error(self):
+        transport=object.__new__(Transport)
+        transport.tally=lambda request: ET.fromstring('<ENVELOPE><COLLECTION/></ENVELOPE>')
+        with self.assertRaisesRegex(ValueError,'reachable.*stable GUID'):
+            transport.companies()
 
 if __name__=='__main__':unittest.main()
