@@ -95,7 +95,7 @@ test("creates balanced books for everyday money flows", async () => {
 });
 
 test("balances GST sales, purchases and all correction documents", async () => {
-  const { salesEntry, purchaseEntry, adjustmentEntry, manualEntry, isBalanced } = await vite.ssrLoadModule("/app/lib/accounting.ts");
+  const { salesEntry, purchaseEntry, adjustmentEntry, manualEntry, assetAcquisitionEntry, depreciationEntry, periodAdjustmentEntry, isBalanced } = await vite.ssrLoadModule("/app/lib/accounting.ts");
   assert.equal(isBalanced(salesEntry(100000, 18000)), true);
   assert.equal(isBalanced(purchaseEntry(100000, 18000)), true);
   for (const type of ["sales_return", "credit_note", "purchase_return", "debit_note"]) {
@@ -103,12 +103,22 @@ test("balances GST sales, purchases and all correction documents", async () => {
   }
   assert.equal(isBalanced(manualEntry("6000", "1010", 50000)), true);
   assert.equal(manualEntry("6000", "6000", 50000), null);
+  assert.equal(isBalanced(purchaseEntry(100000,18000,true,false,false)),true);
+  assert.equal(isBalanced(purchaseEntry(100000,18000,true,true,true)),true);
+  assert.equal(isBalanced(assetAcquisitionEntry(500000,"1010")),true);
+  assert.equal(isBalanced(depreciationEntry(10000)),true);
+  for(const type of ["provision","bad_debt","income_tax"])assert.equal(isBalanced(periodAdjustmentEntry(type,25000)),true);
 });
 
 test("produces stable profit and balance-sheet totals", async () => {
   const { reportFromBalances } = await vite.ssrLoadModule("/app/lib/accounting.ts");
   const report = reportFromBalances({ "1010": 500000, "2000": 100000, "3000": 200000, "4000": 900000, "5000": 350000, "6000": 50000 });
   assert.deepEqual(report, { assets: 500000, liabilities: 100000, equity: 200000, income: 900000, expenses: 400000, profit: 500000 });
+});
+
+test("reports fixed assets, contra assets, provisions and year-end balances",async()=>{
+ const {reportFromBalances}=await vite.ssrLoadModule("/app/lib/accounting.ts");
+ assert.deepEqual(reportFromBalances({"1500":1000000,"1510":200000,"1520":50000,"2300":60000,"2310":40000,"3200":300000,"6200":200000,"6300":50000,"6400":40000}),{assets:750000,liabilities:100000,equity:300000,income:0,expenses:290000,profit:-290000});
 });
 
 test("bookkeeping rejects unsafe precision, negative values and two-sided lines",async()=>{

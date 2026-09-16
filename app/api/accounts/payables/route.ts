@@ -38,9 +38,8 @@ export async function POST(request: Request) {
       description: `Payment for ${purchase.purchase_number} · ${purchase.supplier_name}`,
       lines: supplierPaymentEntry(amountPaise, parsed.data.paymentMode === "cash").map((line) => line.accountCode === "2000" ? { ...line, partyType: "supplier" as const, partyId: purchase.supplier_id, partyName: purchase.supplier_name } : line),
     });
-    const newPaid = purchase.paid_paise + amountPaise;
     await raw.batch([
-      raw.prepare("UPDATE purchases SET paid_paise=?,status=? WHERE id=? AND owner_user_id=?").bind(newPaid, newPaid === purchase.total_paise ? "paid" : "part_paid", purchase.id, user.id),
+      raw.prepare("UPDATE purchases SET paid_paise=paid_paise+?,status=CASE WHEN paid_paise+?=total_paise THEN 'paid' ELSE 'part_paid' END WHERE id=? AND owner_user_id=?").bind(amountPaise,amountPaise,purchase.id,user.id),
       raw.prepare("INSERT INTO purchase_payments (id,owner_user_id,purchase_id,purchase_number,supplier_name,payment_date,amount_paise,payment_mode,reference,journal_entry_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
         .bind(id,user.id,purchase.id,purchase.purchase_number,purchase.supplier_name,parsed.data.paymentDate,amountPaise,parsed.data.paymentMode,parsed.data.reference||null,journal.id,Date.now()),
       ...journal.statements,
@@ -48,6 +47,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ message: `Supplier payment saved as ${journal.number}.`, outstandingPaise: outstanding - amountPaise }, { status: 201 });
   } catch (error) {
     if (error instanceof Error && error.message === "PERIOD_LOCKED") return NextResponse.json({ message: "This accounting period is locked." }, { status: 409 });
+    if (error instanceof Error && error.message.includes("PURCHASE_PAYMENT_OUT_OF_RANGE")) return NextResponse.json({ message: "Another payment changed this supplier bill. Refresh and enter no more than the latest balance." }, { status: 409 });
     console.error("Supplier payment failed", error);
     return NextResponse.json({ message: "The supplier payment could not be saved." }, { status: 500 });
   }

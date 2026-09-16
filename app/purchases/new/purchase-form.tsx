@@ -106,8 +106,11 @@ export default function PurchaseForm({
     }
     setStatus("saving");
     setMessage("");
+    const form=new FormData(e.currentTarget);
     const payload = {
-      ...Object.fromEntries(new FormData(e.currentTarget).entries()),
+      ...Object.fromEntries(form.entries()),
+      itcEligible:form.get("itcEligible")==="on",
+      reverseCharge:form.get("reverseCharge")==="on",
       lines,
     };
     try {
@@ -208,6 +211,9 @@ export default function PurchaseForm({
               <option value="ordered">Ordered</option>
             </select>
           </label>
+          <label><span>Place of supply</span><input name="placeOfSupply" defaultValue={supplier.state}/></label>
+          <label className="check-field"><input type="checkbox" name="itcEligible" defaultChecked/><span>Input tax credit appears eligible in books</span></label>
+          <label className="check-field"><input type="checkbox" name="reverseCharge"/><span>Reverse charge applies</span></label>
         </div>
       </section>
       <section className="bill-section">

@@ -16,12 +16,18 @@ export const CORE_ACCOUNTS = [
   { code: "1300", name: "Input GST credit", category: "asset", normalSide: "debit", systemKey: "input_gst" },
   { code: "1400", name: "Supplier advances", category: "asset", normalSide: "debit", systemKey: "supplier_advances" },
   { code: "1410", name: "Employee advances", category: "asset", normalSide: "debit", systemKey: "employee_advances" },
+  { code: "1500", name: "Fixed assets", category: "asset", normalSide: "debit", systemKey: "fixed_assets" },
+  { code: "1510", name: "Accumulated depreciation", category: "asset", normalSide: "credit", systemKey: "accumulated_depreciation" },
+  { code: "1520", name: "Allowance for doubtful accounts", category: "asset", normalSide: "credit", systemKey: "doubtful_accounts" },
   { code: "2000", name: "Supplier money due", category: "liability", normalSide: "credit", systemKey: "payables" },
   { code: "2100", name: "GST payable", category: "liability", normalSide: "credit", systemKey: "output_gst" },
   { code: "2200", name: "Customer advances", category: "liability", normalSide: "credit", systemKey: "customer_advances" },
   { code: "2210", name: "Payroll deductions payable", category: "liability", normalSide: "credit", systemKey: "payroll_deductions" },
+  { code: "2300", name: "Provisions and accrued expenses", category: "liability", normalSide: "credit", systemKey: "provisions" },
+  { code: "2310", name: "Income tax payable", category: "liability", normalSide: "credit", systemKey: "income_tax_payable" },
   { code: "3000", name: "Owner's capital", category: "equity", normalSide: "credit", systemKey: "capital" },
   { code: "3100", name: "Opening balance equity", category: "equity", normalSide: "credit", systemKey: "opening_equity" },
+  { code: "3200", name: "Retained earnings", category: "equity", normalSide: "credit", systemKey: "retained_earnings" },
   { code: "4000", name: "Sales", category: "income", normalSide: "credit", systemKey: "sales" },
   { code: "4010", name: "Other income", category: "income", normalSide: "credit", systemKey: "other_income" },
   { code: "4090", name: "Sales returned", category: "income", normalSide: "debit", systemKey: "sales_returns" },
@@ -30,6 +36,9 @@ export const CORE_ACCOUNTS = [
   { code: "5090", name: "Purchases returned", category: "expense", normalSide: "credit", systemKey: "purchase_returns" },
   { code: "6000", name: "Business expenses", category: "expense", normalSide: "debit", systemKey: "expenses" },
   { code: "6100", name: "Salary expense", category: "expense", normalSide: "debit", systemKey: "salary" },
+  { code: "6200", name: "Depreciation expense", category: "expense", normalSide: "debit", systemKey: "depreciation" },
+  { code: "6300", name: "Provisions and bad debts", category: "expense", normalSide: "debit", systemKey: "provision_expense" },
+  { code: "6400", name: "Income tax expense", category: "expense", normalSide: "debit", systemKey: "income_tax_expense" },
 ] as const;
 
 export function rupeesToPaise(value: string | number) {
@@ -108,14 +117,20 @@ export function salesEntry(taxablePaise: number, taxPaise: number, paid = false,
   ];
 }
 
-export function purchaseEntry(taxablePaise: number, taxPaise: number, inventory = true): BookLine[] {
-  const total = taxablePaise + taxPaise;
+export function purchaseEntry(taxablePaise: number, taxPaise: number, inventory = true, itcEligible = true, reverseCharge = false): BookLine[] {
+  const total = taxablePaise + (reverseCharge ? 0 : taxPaise);
+  const assetCost = taxablePaise + (itcEligible ? 0 : taxPaise);
   return [
-    { accountCode: inventory ? "1200" : "5000", accountName: inventory ? "Stock on hand" : "Goods purchased", debitPaise: taxablePaise, creditPaise: 0 },
-    ...(taxPaise ? [{ accountCode: "1300", accountName: "Input GST credit", debitPaise: taxPaise, creditPaise: 0 }] : []),
+    { accountCode: inventory ? "1200" : "5000", accountName: inventory ? "Stock on hand" : "Goods purchased", debitPaise: assetCost, creditPaise: 0 },
+    ...(taxPaise && itcEligible ? [{ accountCode: "1300", accountName: "Input GST credit", debitPaise: taxPaise, creditPaise: 0 }] : []),
     { accountCode: "2000", accountName: "Supplier money due", debitPaise: 0, creditPaise: total },
+    ...(taxPaise && reverseCharge ? [{ accountCode: "2100", accountName: "GST payable", debitPaise: 0, creditPaise: taxPaise }] : []),
   ];
 }
+
+export function assetAcquisitionEntry(costPaise:number,paymentAccountCode:"1000"|"1010"|"2000"):BookLine[]{const names={"1000":"Cash in hand","1010":"Bank account","2000":"Supplier money due"};return [{accountCode:"1500",accountName:"Fixed assets",debitPaise:costPaise,creditPaise:0},{accountCode:paymentAccountCode,accountName:names[paymentAccountCode],debitPaise:0,creditPaise:costPaise}]}
+export function depreciationEntry(amountPaise:number):BookLine[]{return [{accountCode:"6200",accountName:"Depreciation expense",debitPaise:amountPaise,creditPaise:0},{accountCode:"1510",accountName:"Accumulated depreciation",debitPaise:0,creditPaise:amountPaise}]}
+export function periodAdjustmentEntry(type:"provision"|"bad_debt"|"income_tax",amountPaise:number):BookLine[]{if(type==="income_tax")return [{accountCode:"6400",accountName:"Income tax expense",debitPaise:amountPaise,creditPaise:0},{accountCode:"2310",accountName:"Income tax payable",debitPaise:0,creditPaise:amountPaise}];return [{accountCode:"6300",accountName:"Provisions and bad debts",debitPaise:amountPaise,creditPaise:0},{accountCode:type==="bad_debt"?"1520":"2300",accountName:type==="bad_debt"?"Allowance for doubtful accounts":"Provisions and accrued expenses",debitPaise:0,creditPaise:amountPaise}]}
 
 export function receiptEntry(amountPaise: number, cash = false): BookLine[] {
   return [
@@ -195,10 +210,10 @@ export function adjustmentEntry(type: "sales_return" | "credit_note" | "purchase
 
 export function reportFromBalances(balances: Record<string, number>) {
   const value = (code: string) => balances[code] || 0;
-  const assets = value("1000") + value("1010") + value("1100") + value("1200") + value("1300") + value("1400") + value("1410");
-  const liabilities = value("2000") + value("2100") + value("2200") + value("2210");
-  const equity = value("3000") + value("3100");
+  const assets = value("1000") + value("1010") + value("1100") + value("1200") + value("1300") + value("1400") + value("1410") + value("1500") - value("1510") - value("1520");
+  const liabilities = value("2000") + value("2100") + value("2200") + value("2210") + value("2300") + value("2310");
+  const equity = value("3000") + value("3100") + value("3200");
   const income = value("4000") + value("4010") - value("4090");
-  const expenses = value("5000") - value("5090") + value("5100") + value("6000") + value("6100");
+  const expenses = value("5000") - value("5090") + value("5100") + value("6000") + value("6100") + value("6200") + value("6300") + value("6400");
   return { assets, liabilities, equity, income, expenses, profit: income - expenses };
 }

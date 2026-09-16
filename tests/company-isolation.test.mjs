@@ -65,3 +65,11 @@ test("every existing business API resolves the company before using data",()=>{
  function scan(dir){for(const entry of readdirSync(dir,{withFileTypes:true})){const path=dir+"/"+entry.name;if(entry.isDirectory())scan(path);else if(path.endsWith("route.ts")&&!path.includes("/companies/")){const source=readFileSync(path,"utf8");if(path==="app/api/integrations/tally/connector/route.ts")assert.match(source,/await authenticateBridge\(request\)/);else assert.match(source,/company-auth/,path);assert.doesNotMatch(source,/getChatGPTUser\(\)/,path);}}}
  scan("app/api");
 });
+
+test("database guards reject concurrent customer and supplier overpayments",()=>{
+ const s=setup(),owner="company";
+ s.db.prepare("INSERT INTO invoices(id,owner_user_id,invoice_number,invoice_date,customer_name,subtotal_paise,total_paise,paid_paise,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run("i",owner,"INV-1","2026-01-01","Customer",10000,10000,9000,"part_paid",1);
+ assert.throws(()=>s.db.prepare("UPDATE invoices SET paid_paise=paid_paise+2000 WHERE id='i'").run(),/INVOICE_PAYMENT_OUT_OF_RANGE/);
+ s.db.prepare("INSERT INTO purchases(id,owner_user_id,purchase_number,supplier_name,purchase_date,subtotal_paise,gst_paise,total_paise,paid_paise,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run("p",owner,"PUR-1","Supplier","2026-01-01",10000,0,10000,9000,"part_paid",1);
+ assert.throws(()=>s.db.prepare("UPDATE purchases SET paid_paise=paid_paise+2000 WHERE id='p'").run(),/PURCHASE_PAYMENT_OUT_OF_RANGE/);
+});

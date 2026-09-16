@@ -21,6 +21,9 @@ const schema = z.object({
   supplierInvoiceNumber: z.string().trim().max(100).optional().default(""),
   purchaseDate: z.string().length(10),
   status: z.enum(["received", "ordered"]),
+  itcEligible:z.boolean().default(true),
+  reverseCharge:z.boolean().default(false),
+  placeOfSupply:z.string().trim().max(80).optional().default(""),
   notes: z.string().trim().max(500).optional().default(""),
   lines: z.array(line).min(1).max(20),
 });
@@ -128,7 +131,7 @@ export async function POST(request: Request) {
   );
   const subtotal = items.reduce((s, i) => s + i.taxable, 0),
     gst = items.reduce((s, i) => s + i.tax, 0),
-    total = subtotal + gst,
+    total = subtotal + (d.reverseCharge?0:gst),
     id = crypto.randomUUID(),
     number = `PUR-${d.purchaseDate.slice(0, 4)}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
     now = Date.now(),
@@ -136,7 +139,7 @@ export async function POST(request: Request) {
   const statements = [
     raw
       .prepare(
-        "INSERT INTO purchases (id,owner_user_id,purchase_number,supplier_id,supplier_name,supplier_gstin,supplier_invoice_number,purchase_date,subtotal_paise,gst_paise,total_paise,status,notes,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO purchases (id,owner_user_id,purchase_number,supplier_id,supplier_name,supplier_gstin,supplier_invoice_number,purchase_date,subtotal_paise,gst_paise,itc_eligible,reverse_charge,place_of_supply,total_paise,status,notes,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       )
       .bind(
         id,
@@ -149,6 +152,9 @@ export async function POST(request: Request) {
         d.purchaseDate,
         subtotal,
         gst,
+        d.itcEligible?1:0,
+        d.reverseCharge?1:0,
+        d.placeOfSupply||null,
         total,
         d.status,
         d.notes || null,
@@ -209,7 +215,7 @@ export async function POST(request: Request) {
           sourceType: "purchase",
           sourceId: id,
           description: `Goods received · ${number} · ${supplierName}`,
-          lines: purchaseEntry(subtotal, gst).map((line) => line.accountCode === "2000" ? { ...line, partyType: "supplier" as const, partyId: supplierId, partyName: supplierName } : line),
+          lines: purchaseEntry(subtotal, gst,true,d.itcEligible,d.reverseCharge).map((line) => line.accountCode === "2000" ? { ...line, partyType: "supplier" as const, partyId: supplierId, partyName: supplierName } : line),
         })
       : null;
     await raw.batch([...statements, ...(journal?.statements || [])]);

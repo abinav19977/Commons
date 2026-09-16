@@ -377,6 +377,9 @@ export const purchases = sqliteTable(
     purchaseDate: text("purchase_date").notNull(),
     subtotalPaise: integer("subtotal_paise").notNull(),
     gstPaise: integer("gst_paise").notNull().default(0),
+    itcEligible: integer("itc_eligible", { mode: "boolean" }).notNull().default(true),
+    reverseCharge: integer("reverse_charge", { mode: "boolean" }).notNull().default(false),
+    placeOfSupply: text("place_of_supply"),
     totalPaise: integer("total_paise").notNull(),
     paidPaise: integer("paid_paise").notNull().default(0),
     status: text("status").notNull().default("received"),
@@ -457,6 +460,10 @@ export const gstFilingSessions = sqliteTable(
       .default(0),
     invoiceCount: integer("invoice_count").notNull().default(0),
     purchaseCount: integer("purchase_count").notNull().default(0),
+    matched2bCount: integer("matched_2b_count").notNull().default(0),
+    unmatched2bCount: integer("unmatched_2b_count").notNull().default(0),
+    booksOnlyCount: integer("books_only_count").notNull().default(0),
+    ineligibleItcPaise: integer("ineligible_itc_paise").notNull().default(0),
     issueCount: integer("issue_count").notNull().default(0),
     analysisMode: text("analysis_mode").notNull().default("analytical"),
     advice: text("advice"),
@@ -470,6 +477,23 @@ export const gstFilingSessions = sqliteTable(
     ),
   ],
 );
+
+export const gst2bEntries = sqliteTable("gst_2b_entries", {
+  id:text("id").primaryKey(), ownerUserId:text("owner_user_id").notNull(), taxPeriod:text("tax_period").notNull(),
+  supplierGstin:text("supplier_gstin").notNull(), supplierName:text("supplier_name"), invoiceNumber:text("invoice_number").notNull(), invoiceDate:text("invoice_date"),
+  taxablePaise:integer("taxable_paise").notNull().default(0), igstPaise:integer("igst_paise").notNull().default(0), cgstPaise:integer("cgst_paise").notNull().default(0), sgstPaise:integer("sgst_paise").notNull().default(0), cessPaise:integer("cess_paise").notNull().default(0),
+  matchStatus:text("match_status").notNull().default("unmatched"), matchedPurchaseId:text("matched_purchase_id"), createdAt:integer("created_at").notNull(),
+},t=>[uniqueIndex("idx_gst2b_owner_period_doc").on(t.ownerUserId,t.taxPeriod,t.supplierGstin,t.invoiceNumber),index("idx_gst2b_owner_match").on(t.ownerUserId,t.taxPeriod,t.matchStatus)]);
+
+export const fixedAssets = sqliteTable("fixed_assets", {
+  id:text("id").primaryKey(),ownerUserId:text("owner_user_id").notNull(),name:text("name").notNull(),category:text("category").notNull(),acquisitionDate:text("acquisition_date").notNull(),
+  originalCostPaise:integer("original_cost_paise").notNull(),residualValuePaise:integer("residual_value_paise").notNull().default(0),usefulLifeMonths:integer("useful_life_months").notNull(),
+  accumulatedDepreciationPaise:integer("accumulated_depreciation_paise").notNull().default(0),lastDepreciationDate:text("last_depreciation_date"),paymentAccountCode:text("payment_account_code").notNull().default("2000"),status:text("status").notNull().default("active"),createdAt:integer("created_at").notNull(),updatedAt:integer("updated_at").notNull(),
+},t=>[index("idx_fixed_assets_owner_date").on(t.ownerUserId,t.acquisitionDate),index("idx_fixed_assets_owner_status").on(t.ownerUserId,t.status)]);
+
+export const yearEndClosures = sqliteTable("year_end_closures", {
+  id:text("id").primaryKey(),ownerUserId:text("owner_user_id").notNull(),fiscalYear:text("fiscal_year").notNull(),periodStart:text("period_start").notNull(),periodEnd:text("period_end").notNull(),profitPaise:integer("profit_paise").notNull(),journalEntryId:text("journal_entry_id").notNull(),closedBy:text("closed_by").notNull(),createdAt:integer("created_at").notNull(),
+},t=>[uniqueIndex("idx_year_end_owner_year").on(t.ownerUserId,t.fiscalYear)]);
 
 export const receivableSettings = sqliteTable("receivable_settings", {
   ownerUserId: text("owner_user_id").primaryKey(),

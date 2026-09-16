@@ -20,6 +20,8 @@ export default async function AccountsPage() {
     { label: "Money Categories", detail: "Simple chart of accounts", icon: ListTree, href: "/accounts/chart" },
     { label: "Returns & Corrections", detail: "Credit notes, debit notes and returns", icon: ArchiveRestore, href: "/accounts/returns" },
     { label: "Stock Locations", detail: "Warehouses, batches and expiry", icon: Boxes, href: "/accounts/inventory" },
+    { label: "Fixed Assets", detail: "Asset register and depreciation", icon: Landmark, href: "/accounts/assets" },
+    { label: "Year-end Close", detail: "Provisions, tax and retained earnings", icon: Scale, href: "/accounts/year-end" },
     { label: "GST Connections", detail: "Returns, e-invoice and e-way bill", icon: Landmark, href: "/accounts/compliance" },
     { label: "Tally Sync", detail: "Import, export and reconcile with TallyPrime", icon: ArrowLeftRight, href: "/integrations/tally" },
     { label: "Safety & Access", detail: "Audit trail, locks, roles and backups", icon: FileClock, href: "/accounts/controls" },
