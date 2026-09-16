@@ -96,7 +96,10 @@ export async function POST(request: Request) {
     if (data.status === "paid") {
       await assertPeriodOpen(user.id, data.paymentDate);
       const journal = await prepareJournal({ ownerUserId: user.id, actor: user.email, entryDate: data.paymentDate, sourceType: "payroll", sourceId: id, description: `Salary · ${data.employeeName} · ${data.salaryMonth}`, lines: payrollEntry(baseSalaryPaise + bonusPaise, advanceDeductionPaise, otherDeductionPaise, netPayPaise, data.paymentMode === "cash") });
-      const applications = advanceDeductionPaise > 0 ? [raw.prepare("UPDATE payment_advances SET applied_paise = MIN(amount_paise, applied_paise + ?), status = CASE WHEN applied_paise + ? >= amount_paise THEN 'applied' ELSE 'active' END, updated_at = ? WHERE id = (SELECT id FROM payment_advances WHERE owner_user_id = ? AND advance_type = 'employee_paid' AND party_id = ? AND status != 'refunded' AND applied_paise < amount_paise ORDER BY advance_date LIMIT 1)").bind(advanceDeductionPaise, advanceDeductionPaise, now, user.id, data.employeeKey)] : [];
+      const openAdvances = advanceDeductionPaise > 0 ? (await raw.prepare("SELECT id,amount_paise-applied_paise AS available FROM payment_advances WHERE owner_user_id=? AND advance_type='employee_paid' AND party_id=? AND status!='refunded' AND applied_paise<amount_paise ORDER BY advance_date,created_at").bind(user.id,data.employeeKey).all<{id:string;available:number}>()).results : [];
+      let remaining=advanceDeductionPaise;
+      const applications:ReturnType<typeof raw.prepare>[]=[];
+      for(const advance of openAdvances){if(remaining<=0)break;const applied=Math.min(remaining,Number(advance.available));applications.push(raw.prepare("UPDATE payment_advances SET applied_paise=applied_paise+?,status=CASE WHEN applied_paise+? >= amount_paise THEN 'applied' ELSE 'active' END,updated_at=? WHERE id=? AND owner_user_id=?").bind(applied,applied,now,advance.id,user.id));remaining-=applied;}
       await raw.batch([save, ...applications, ...journal.statements]);
     } else {
       await save.run();

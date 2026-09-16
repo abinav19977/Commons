@@ -4,6 +4,7 @@ import { tallyDate } from "../../../lib/tally-document";
 import { z } from "zod";
 import { getRawDb } from "../../../../db";
 import { getChatGPTUser } from "../../../company-auth";
+import { BACKUP_FORMAT, BACKUP_TABLES } from "../../../lib/backup";
 
 const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("lock"), periodStart: z.string().length(10), periodEnd: z.string().length(10), reason: z.string().trim().min(3).max(240) }),
@@ -16,11 +17,11 @@ export async function GET(request: Request) {
   const user = await getChatGPTUser(request);
   if (!user) return NextResponse.json({ message: "Please sign in again." }, { status: 401 });
   const raw = getRawDb();
-  const tableNames = ["business_profiles", "customers", "suppliers", "products", "invoices", "invoice_items", "invoice_payments", "purchases", "purchase_items", "stock_movements", "employees", "ledger_accounts", "gst_filing_sessions", "receivable_settings", "reminder_logs", "business_members", "tally_documents", "tally_bill_allocations", "tally_batch_effects", "tally_import_receipts", "tally_transfers", "payment_advances", "payroll_entries", "bank_import_batches", "bank_transactions", "journal_entries", "journal_lines", "adjustment_documents", "warehouses", "inventory_batches", "period_locks", "audit_events"];
+  const tableNames = BACKUP_TABLES;
   try {
     const results = await raw.batch(tableNames.map((table) => raw.prepare(`SELECT * FROM ${table} WHERE owner_user_id = ?`).bind(user.id)));
     const data = Object.fromEntries(tableNames.map((table, index) => [table, results[index].results]));
-    return new NextResponse(JSON.stringify({ format: "commons-backup-v2", createdAt: new Date().toISOString(), companyId:user.id, restoreVerified:false, excluded:["account identity","connector credentials","external API credentials"], dataSha256:await digest(JSON.stringify(data)), data }, null, 2), { headers: { "content-type": "application/json", "content-disposition": `attachment; filename="commons-backup-${new Date().toISOString().slice(0, 10)}.json"`, "cache-control": "no-store" } });
+    return new NextResponse(JSON.stringify({ format: BACKUP_FORMAT, createdAt: new Date().toISOString(), companyId:user.id, restoreSupported:true, excluded:["account identity","connector credentials","external API credentials"], dataSha256:await digest(JSON.stringify(data)), data }, null, 2), { headers: { "content-type": "application/json", "content-disposition": `attachment; filename="commons-backup-${new Date().toISOString().slice(0, 10)}.json"`, "cache-control": "no-store" } });
   } catch (error) {
     console.error("Backup export failed", error);
     return NextResponse.json({ message: "Backup could not be prepared." }, { status: 500 });
@@ -33,6 +34,8 @@ export async function POST(request: Request) {
   const parsed = schema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ message: "Check the control details." }, { status: 400 });
   const d = parsed.data;
+  if (d.action === "member" && user.role !== "owner") return NextResponse.json({ message: "Only the company owner can change team access." }, { status: 403 });
+  if (d.action !== "member" && !["owner","accountant"].includes(user.role)) return NextResponse.json({ message: "Owner or accountant access is required for this control." }, { status: 403 });
   if((d.action==="lock"||d.action==="review")&&(!tallyDate(d.periodStart.replaceAll("-",""))||!tallyDate(d.periodEnd.replaceAll("-",""))))return NextResponse.json({message:"Choose valid calendar dates."},{status:400});
   const raw = getRawDb();
   const now = Date.now();
@@ -48,8 +51,9 @@ export async function POST(request: Request) {
     }
     if (d.action === "member") {
       const id = crypto.randomUUID();
-      await raw.prepare("INSERT INTO business_members (id,owner_user_id,email,role,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(owner_user_id,email) DO UPDATE SET role=excluded.role, status='invited'")
-        .bind(id, user.id, d.email.toLowerCase(), d.role, "invited", now).run();
+      if(d.email.toLowerCase()===user.email.toLowerCase()) return NextResponse.json({message:"The owner already has full access."},{status:400});
+      await raw.prepare("INSERT INTO business_members (id,owner_user_id,email,role,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(owner_user_id,email) DO UPDATE SET role=excluded.role, status='active'")
+        .bind(id, user.id, d.email.toLowerCase(), d.role, "active", now).run();
       return NextResponse.json({ id }, { status: 201 });
     }
     if (d.action === "review") {

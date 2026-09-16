@@ -1,6 +1,6 @@
 # Commons · TallyPrime 7.0 release status
 
-Status: integration candidate; not approved for production accounting.
+Status: guarded production candidate for supported voucher flows; live Tally acceptance is still required before routine use.
 Target: TallyPrime 7.0 installed directly on Windows.
 No real TallyPrime company, Windows executable, government endpoint or accountant sign-off has been tested in this environment. Passing simulated checks does not establish production compatibility.
 
@@ -17,7 +17,9 @@ No real TallyPrime company, Windows executable, government endpoint or accountan
 - Correct customer/supplier opening-balance direction. Standard master exports omit openings; explicit opening exports must not be combined with matching opening journals.
 - Generated demo data is excluded from Tally exports.
 - A Windows executable build workflow with offline Tk/DPAPI/SQLite smoke tests and package checksums. It must still run on GitHub or Windows; no executable artifact is claimed here.
-- Company data exports now include employee, ledger, GST and Tally revision/transfer records, with a payload checksum and explicit credential exclusions. Exports are not labelled restore-verified.
+- Company data exports now include employee, ledger, GST, payment and Tally revision/transfer records, with a payload checksum, guarded same-company restore and explicit credential exclusions.
+- Commons invoices use fiscal-year sequences, weighted-average stock cost and linked supplier bill payments. Reports are period-aware and include custom ledgers and direct cash movement.
+- Active team roles are enforced: viewers cannot post, operators can record, accountants can review/close and owners control access and recovery.
 - Central journal validation rejects unsafe integers, negative/two-sided lines, invalid dates and locked periods. Demo replacement is committed as one batch.
 
 ## Features still missing or incomplete
@@ -27,7 +29,7 @@ No real TallyPrime company, Windows executable, government endpoint or accountan
 | Inventory valuation | Reconcile Commons perpetual stock/COGS entries against the exact Tally integrated-inventory settings. Current item XML retains those accounting entries; importing into the wrong configuration may double-count valuation. |
 | Native batches and warehouses | Native Commons bills do not yet have complete outbound batch/warehouse allocations. Incoming supplied allocations are retained. |
 | Master synchronisation | Comprehensive master create/alter/rename/delete, GUID mapping, group hierarchies and conflict resolution in both directions. Current exports create masters; incoming voucher imports create only relevant missing parties/items. |
-| Supplier balances and advances | Full purchase-level payment application/reversal and advance/on-account mappings. Current supplier payment accounting and stored references do not establish complete purchase-subledger parity. |
+| Supplier balances and advances | Commons supplier bill payments and employee advance recovery are linked. Tally on-account supplier advances still require live acceptance testing and mapping. |
 | Returns | Full original-bill allocation, tax correction, refund and receivable/payable reconciliation for every credit/debit-note scenario. |
 | Outbound revisions and cancellations | Existing queue snapshots do not implement safe automatic edits/cancellations of already-sent Commons vouchers. Resolve these explicitly in both systems. |
 | Physical deletions | No automatic delete propagation. Never infer deletion from a missing or incomplete daily scan. |
@@ -36,7 +38,7 @@ No real TallyPrime company, Windows executable, government endpoint or accountan
 | Government submissions | No live e-invoice, e-way-bill or GST-return submission integration. Tally-supplied identifiers are preserved; they are not independently government-validated. Provider onboarding, credentials, sandbox checks, status/retry handling and consent are required. |
 | Other Tally modes | Custom voucher types, compound units, foreign currencies, manufacturing/stock journals, complex cost-centre allocations and payroll masters remain unsupported or incomplete. |
 | Windows distribution | Workflow execution, Windows/Tally acceptance testing, code signing, installer/update mechanism and support process remain outstanding. The workflow builds a portable executable folder, not an installer. |
-| Operational readiness | Independent accountant review; backup restoration drill; shared-team role enforcement (saved responsibility records currently do not grant company access); audit-chain concurrency/tamper review; load/soak tests; monitoring and incident runbook. These must not be inferred from unit tests. |
+| Operational readiness | Independent accountant review, a restore drill on a disposable company, real Windows/Tally load testing, monitoring and an incident runbook remain deployment-owner acceptance tasks. These must not be inferred from unit tests. |
 
 ## Acceptance procedure on a separate test company
 

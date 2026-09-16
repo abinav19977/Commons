@@ -14,6 +14,7 @@ export default async function AccountsPage() {
   const options = [
     { label: "Record Money", detail: "Money in, money out or transfer", icon: BookOpenCheck, href: "/accounts/new" },
     { label: "Match a Receipt", detail: "Apply a payment to a customer bill", icon: ReceiptIndianRupee, href: "/accounts/receipts" },
+    { label: "Pay a Supplier Bill", detail: "Apply full or partial supplier payments", icon: ReceiptIndianRupee, href: "/accounts/payables" },
     { label: "Opening Balances", detail: "Start from your present position", icon: Scale, href: "/accounts/opening" },
     { label: "Business Reports", detail: "Profit, balance and cash flow", icon: ScrollText, href: "/accounts/reports" },
     { label: "Money Categories", detail: "Simple chart of accounts", icon: ListTree, href: "/accounts/chart" },
@@ -22,6 +23,7 @@ export default async function AccountsPage() {
     { label: "GST Connections", detail: "Returns, e-invoice and e-way bill", icon: Landmark, href: "/accounts/compliance" },
     { label: "Tally Sync", detail: "Import, export and reconcile with TallyPrime", icon: ArrowLeftRight, href: "/integrations/tally" },
     { label: "Safety & Access", detail: "Audit trail, locks, roles and backups", icon: FileClock, href: "/accounts/controls" },
+    { label: "Restore Backup", detail: "Verify and recover an empty company", icon: ArchiveRestore, href: "/accounts/restore" },
   ];
   return <main className="workspace-shell">
     <header className="site-header workspace-header"><Link className="wordmark" href="/"><Mark /></Link><a className="header-action" href={chatGPTSignOutPath("/")}>Sign out</a></header>

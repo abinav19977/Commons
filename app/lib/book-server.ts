@@ -60,7 +60,25 @@ export async function prepareJournal(options: {
     .first<{ event_hash: string }>();
   const eventId = crypto.randomUUID();
   const hash = await sha256(
-    [previous?.event_hash || "GENESIS", eventId, options.ownerUserId, options.sourceType, options.sourceId || id, now, options.description].join("|"),
+    [
+      previous?.event_hash || "GENESIS",
+      eventId,
+      options.ownerUserId,
+      options.sourceType,
+      options.sourceId || id,
+      options.entryDate,
+      now,
+      options.description,
+      JSON.stringify(options.lines.map((line) => ({
+        accountCode: line.accountCode,
+        accountName: line.accountName,
+        debitPaise: line.debitPaise,
+        creditPaise: line.creditPaise,
+        partyType: line.partyType || null,
+        partyId: line.partyId || null,
+        partyName: line.partyName || null,
+      }))),
+    ].join("|"),
   );
   const statements = [
     ...CORE_ACCOUNTS.map((account) =>
@@ -73,8 +91,8 @@ export async function prepareJournal(options: {
     ).bind(id, options.ownerUserId, number, options.entryDate, options.sourceType, options.sourceId || null, options.description, "posted", options.actor, now),
     ...options.lines.map((line) =>
       raw.prepare(
-        "INSERT INTO journal_lines (id,entry_id,owner_user_id,account_code,account_name,debit_paise,credit_paise,created_at) VALUES (?,?,?,?,?,?,?,?)",
-      ).bind(crypto.randomUUID(), id, options.ownerUserId, line.accountCode, line.accountName, line.debitPaise, line.creditPaise, now),
+        "INSERT INTO journal_lines (id,entry_id,owner_user_id,account_code,account_name,debit_paise,credit_paise,party_type,party_id,party_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+      ).bind(crypto.randomUUID(), id, options.ownerUserId, line.accountCode, line.accountName, line.debitPaise, line.creditPaise, line.partyType || null, line.partyId || null, line.partyName || null, now),
     ),
     raw.prepare(
       "INSERT INTO audit_events (id,owner_user_id,actor,action,entity_type,entity_id,summary,previous_hash,event_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",

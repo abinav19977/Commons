@@ -3,6 +3,9 @@ export type BookLine = {
   accountName: string;
   debitPaise: number;
   creditPaise: number;
+  partyType?: "customer" | "supplier" | "employee";
+  partyId?: string | null;
+  partyName?: string | null;
 };
 
 export const CORE_ACCOUNTS = [
@@ -76,10 +79,15 @@ export function simpleEntry(
   ];
 }
 
-export function manualEntry(debitCode: string, creditCode: string, amountPaise: number): BookLine[] | null {
+export function manualEntry(
+  debitCode: string,
+  creditCode: string,
+  amountPaise: number,
+  accounts: ReadonlyArray<{ code: string; name: string }> = CORE_ACCOUNTS,
+): BookLine[] | null {
   if (debitCode === creditCode) return null;
-  const debit = CORE_ACCOUNTS.find((account) => account.code === debitCode);
-  const credit = CORE_ACCOUNTS.find((account) => account.code === creditCode);
+  const debit = accounts.find((account) => account.code === debitCode);
+  const credit = accounts.find((account) => account.code === creditCode);
   if (!debit || !credit || amountPaise <= 0) return null;
   return [
     { accountCode: debit.code, accountName: debit.name, debitPaise: amountPaise, creditPaise: 0 },
@@ -113,6 +121,13 @@ export function receiptEntry(amountPaise: number, cash = false): BookLine[] {
   return [
     { accountCode: cash ? "1000" : "1010", accountName: cash ? "Cash in hand" : "Bank account", debitPaise: amountPaise, creditPaise: 0 },
     { accountCode: "1100", accountName: "Customer money due", debitPaise: 0, creditPaise: amountPaise },
+  ];
+}
+
+export function supplierPaymentEntry(amountPaise: number, cash = false): BookLine[] {
+  return [
+    { accountCode: "2000", accountName: "Supplier money due", debitPaise: amountPaise, creditPaise: 0 },
+    { accountCode: cash ? "1000" : "1010", accountName: cash ? "Cash in hand" : "Bank account", debitPaise: 0, creditPaise: amountPaise },
   ];
 }
 

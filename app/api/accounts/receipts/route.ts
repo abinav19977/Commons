@@ -21,14 +21,14 @@ export async function POST(request: Request) {
   const amountPaise = rupeesToPaise(parsed.data.amount);
   if (!amountPaise) return NextResponse.json({ message: "Enter an amount greater than zero." }, { status: 400 });
   const raw = getRawDb();
-  const invoice = await raw.prepare("SELECT id,invoice_number,customer_name,total_paise,paid_paise FROM invoices WHERE id = ? AND owner_user_id = ?").bind(parsed.data.invoiceId, user.id).first<{id:string;invoice_number:string;customer_name:string;total_paise:number;paid_paise:number}>();
+  const invoice = await raw.prepare("SELECT id,invoice_number,customer_id,customer_name,total_paise,paid_paise FROM invoices WHERE id = ? AND owner_user_id = ?").bind(parsed.data.invoiceId, user.id).first<{id:string;invoice_number:string;customer_id:string|null;customer_name:string;total_paise:number;paid_paise:number}>();
   if (!invoice) return NextResponse.json({ message: "Invoice not found." }, { status: 404 });
   const outstanding = invoice.total_paise - invoice.paid_paise;
   if (amountPaise > outstanding) return NextResponse.json({ message: "Receipt cannot exceed the invoice balance." }, { status: 400 });
   try {
     await assertPeriodOpen(user.id, parsed.data.paymentDate);
     const id = crypto.randomUUID();
-    const journal = await prepareJournal({ ownerUserId: user.id, actor: user.email, entryDate: parsed.data.paymentDate, sourceType: "invoice_receipt", sourceId: id, description: `Receipt for ${invoice.invoice_number} · ${invoice.customer_name}`, lines: receiptEntry(amountPaise, parsed.data.paymentMode === "cash") });
+    const journal = await prepareJournal({ ownerUserId: user.id, actor: user.email, entryDate: parsed.data.paymentDate, sourceType: "invoice_receipt", sourceId: id, description: `Receipt for ${invoice.invoice_number} · ${invoice.customer_name}`, lines: receiptEntry(amountPaise, parsed.data.paymentMode === "cash").map((line) => line.accountCode === "1100" ? { ...line, partyType: "customer" as const, partyId: invoice.customer_id, partyName: invoice.customer_name } : line) });
     const newPaid = invoice.paid_paise + amountPaise;
     await raw.batch([
       raw.prepare("UPDATE invoices SET paid_paise = ?, status = ? WHERE id = ? AND owner_user_id = ?").bind(newPaid, newPaid === invoice.total_paise ? "paid" : "part_paid", invoice.id, user.id),

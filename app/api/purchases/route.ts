@@ -209,7 +209,7 @@ export async function POST(request: Request) {
           sourceType: "purchase",
           sourceId: id,
           description: `Goods received · ${number} · ${supplierName}`,
-          lines: purchaseEntry(subtotal, gst),
+          lines: purchaseEntry(subtotal, gst).map((line) => line.accountCode === "2000" ? { ...line, partyType: "supplier" as const, partyId: supplierId, partyName: supplierName } : line),
         })
       : null;
     await raw.batch([...statements, ...(journal?.statements || [])]);

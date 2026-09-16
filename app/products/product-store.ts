@@ -1,5 +1,5 @@
 import { and, asc, eq } from "drizzle-orm";
-import { getDb } from "../../db";
+import { getDb, getRawDb } from "../../db";
 import { products, stockMovements } from "../../db/schema";
 import type { ProductMovement, ProductView } from "./product-data";
 
@@ -83,6 +83,27 @@ export async function findProduct(
     0,
   );
   return rows[0] ? toProductView(rows[0], movementMilli) : null;
+}
+
+export async function weightedAverageCost(
+  ownerUserId: string,
+  productId: string,
+): Promise<number> {
+  const row = await getRawDb().prepare(`
+    SELECT p.opening_stock_milli,p.purchase_price_paise,
+      COALESCE(SUM(sm.quantity_milli),0) movement_quantity,
+      COALESCE(SUM(CASE WHEN sm.quantity_milli >= 0 THEN sm.total_value_paise ELSE -ABS(sm.total_value_paise) END),0) movement_value
+    FROM products p
+    LEFT JOIN stock_movements sm ON sm.owner_user_id=p.owner_user_id AND sm.product_id=p.id
+    WHERE p.owner_user_id=? AND p.id=?
+    GROUP BY p.id
+  `).bind(ownerUserId, productId).first<Record<string, unknown>>();
+  if (!row) return 0;
+  const openingQuantity = Number(row.opening_stock_milli || 0);
+  const openingCost = Number(row.purchase_price_paise || 0);
+  const quantity = openingQuantity + Number(row.movement_quantity || 0);
+  const value = Math.round((openingQuantity / 1000) * openingCost) + Number(row.movement_value || 0);
+  return quantity > 0 && value >= 0 ? Math.round(value / (quantity / 1000)) : openingCost;
 }
 
 export async function listStockMovements(

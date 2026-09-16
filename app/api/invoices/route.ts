@@ -8,7 +8,7 @@ import { demoBusinessProfile } from "../../other/business/demo-profile";
 import { salesEntry } from "../../lib/accounting";
 import { assertPeriodOpen, prepareJournal } from "../../lib/book-server";
 import { demoProducts } from "../../products/product-data";
-import { listProducts } from "../../products/product-store";
+import { listProducts, weightedAverageCost } from "../../products/product-store";
 const o = (n: number) => z.string().trim().max(n).optional().default("");
 const line = z.object({
   productId: o(80),
@@ -37,6 +37,25 @@ const scaled = (v: string, s: number) => {
   const n = Number(v || 0);
   return Number.isFinite(n) && n >= 0 ? Math.round(n * s) : null;
 };
+
+function fiscalYear(date: string) {
+  const [year, month] = date.split("-").map(Number);
+  const start = month >= 4 ? year : year - 1;
+  return `${String(start).slice(-2)}${String(start + 1).slice(-2)}`;
+}
+
+async function nextInvoiceNumber(ownerUserId: string, invoiceDate: string, configuredPrefix: string) {
+  const raw = getRawDb();
+  const year = fiscalYear(invoiceDate);
+  const prefix = configuredPrefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4) || "INV";
+  const now = Date.now();
+  await raw.prepare("INSERT OR IGNORE INTO invoice_sequences (owner_user_id,fiscal_year,prefix,next_number,updated_at) VALUES (?,?,?,?,?)")
+    .bind(ownerUserId, year, prefix, 1, now).run();
+  const assigned = await raw.prepare("UPDATE invoice_sequences SET next_number=next_number+1,updated_at=? WHERE owner_user_id=? AND fiscal_year=? AND prefix=? RETURNING next_number-1 AS number")
+    .bind(now, ownerUserId, year, prefix).first<{ number: number }>();
+  if (!assigned?.number) throw new Error("INVOICE_SEQUENCE_UNAVAILABLE");
+  return `${prefix}/${year}/${String(assigned.number).padStart(5, "0")}`;
+}
 export async function POST(request: Request) {
   const user = await getChatGPTUser(request);
   if (!user)
@@ -137,20 +156,33 @@ export async function POST(request: Request) {
       }, { status: 409 });
     }
   }
+  const averageCosts = new Map<string, number>();
+  for (const productId of requestedStock.keys()) {
+    const product = productMap.get(productId) || demoProducts.find((candidate) => candidate.id === productId);
+    averageCosts.set(productId, productId.startsWith("demo-") ? product?.purchasePricePaise || 0 : await weightedAverageCost(user.id, productId));
+  }
   const costs = computed.map((item) => {
     if (!item.productId) return 0;
     const product = productMap.get(item.productId) || demoProducts.find((candidate) => candidate.id === item.productId);
     if (!product || product.itemType === "service") return 0;
-    return Math.round((item.quantity / 1000) * product.purchasePricePaise);
+    return Math.round((item.quantity / 1000) * (averageCosts.get(item.productId) ?? product.purchasePricePaise));
   });
   const costOfGoods = costs.reduce((sum, cost) => sum + cost, 0);
   const id = crypto.randomUUID();
-  const invoiceNumber =
-    profile.invoicePrefix +
-    "-" +
-    d.invoiceDate.slice(0, 4) +
-    "-" +
-    crypto.randomUUID().slice(0, 6).toUpperCase();
+  try {
+    await assertPeriodOpen(user.id, d.invoiceDate);
+  } catch (error) {
+    if (error instanceof Error && error.message === "PERIOD_LOCKED")
+      return NextResponse.json({ message: "This accounting period is locked. Choose an open date." }, { status: 409 });
+    throw error;
+  }
+  let invoiceNumber: string;
+  try {
+    invoiceNumber = await nextInvoiceNumber(user.id, d.invoiceDate, profile.invoicePrefix);
+  } catch (error) {
+    console.error("Invoice sequence failed", error);
+    return NextResponse.json({ message: "The next invoice number could not be reserved. No bill was created." }, { status: 500 });
+  }
   const now = Date.now();
   const raw = getRawDb();
   const statements = [
@@ -236,7 +268,7 @@ export async function POST(request: Request) {
       sourceType: "sales_invoice",
       sourceId: id,
       description: `Sale ${invoiceNumber} to ${d.customerName}`,
-      lines: salesEntry(subtotal - (discount || 0), gstTax + cessTax, false, costOfGoods),
+      lines: salesEntry(subtotal - (discount || 0), gstTax + cessTax, false, costOfGoods).map((line) => line.accountCode === "1100" ? { ...line, partyType: "customer" as const, partyId: d.customerId || null, partyName: d.customerName } : line),
     });
     await raw.batch([...statements, ...journal.statements]);
   } catch (error) {

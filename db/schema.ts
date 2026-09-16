@@ -272,6 +272,24 @@ export const invoices = sqliteTable(
   ],
 );
 
+export const invoiceSequences = sqliteTable(
+  "invoice_sequences",
+  {
+    ownerUserId: text("owner_user_id").notNull(),
+    fiscalYear: text("fiscal_year").notNull(),
+    prefix: text("prefix").notNull(),
+    nextNumber: integer("next_number").notNull().default(1),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_invoice_sequences_owner_year_prefix").on(
+      table.ownerUserId,
+      table.fiscalYear,
+      table.prefix,
+    ),
+  ],
+);
+
 export const invoiceItems = sqliteTable(
   "invoice_items",
   {
@@ -360,6 +378,7 @@ export const purchases = sqliteTable(
     subtotalPaise: integer("subtotal_paise").notNull(),
     gstPaise: integer("gst_paise").notNull().default(0),
     totalPaise: integer("total_paise").notNull(),
+    paidPaise: integer("paid_paise").notNull().default(0),
     status: text("status").notNull().default("received"),
     notes: text("notes"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
@@ -375,6 +394,27 @@ export const purchases = sqliteTable(
       table.supplierId,
       table.purchaseDate,
     ),
+  ],
+);
+
+export const purchasePayments = sqliteTable(
+  "purchase_payments",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id").notNull(),
+    purchaseId: text("purchase_id").notNull(),
+    purchaseNumber: text("purchase_number").notNull(),
+    supplierName: text("supplier_name").notNull(),
+    paymentDate: text("payment_date").notNull(),
+    amountPaise: integer("amount_paise").notNull(),
+    paymentMode: text("payment_mode").notNull(),
+    reference: text("reference"),
+    journalEntryId: text("journal_entry_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("idx_purchase_payments_owner_date").on(table.ownerUserId, table.paymentDate),
+    index("idx_purchase_payments_purchase").on(table.purchaseId),
   ],
 );
 
