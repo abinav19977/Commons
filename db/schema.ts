@@ -18,6 +18,25 @@ export const companies = sqliteTable("companies", {
   check("companies_five_slots", sql`${table.slot} BETWEEN 1 AND 5`),
 ]);
 
+export const accounts = sqliteTable("accounts", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  fullName: text("full_name"),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [uniqueIndex("accounts_email_unique").on(table.email)]);
+
+export const accountSessions = sqliteTable("account_sessions", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("account_sessions_token_unique").on(table.tokenHash),
+  index("account_sessions_account").on(table.accountId),
+]);
+
 export const tallyBridges = sqliteTable("tally_bridges", {
   id:text("id").primaryKey(), ownerUserId:text("owner_user_id").notNull(),
   tallyName:text("tally_name").notNull(), tallyGuid:text("tally_guid"),
@@ -44,6 +63,13 @@ export const tallyDocuments=sqliteTable("tally_documents",{
  revision:text("revision").notNull(),kind:text("kind").notNull(),localId:text("local_id"),journalId:text("journal_id"),
  payload:text("payload").notNull(),createdAt:integer("created_at").notNull(),
 },t=>[uniqueIndex("tally_document_revision").on(t.ownerUserId,t.guid,t.revision),index("tally_document_current").on(t.ownerUserId,t.guid,t.createdAt)]);
+
+export const tallyMasters=sqliteTable("tally_masters",{
+ id:text("id").primaryKey(),ownerUserId:text("owner_user_id").notNull(),
+ kind:text("kind").notNull(),name:text("name").notNull(),topGroup:text("top_group"),
+ unit:text("unit"),gstRateBasisPoints:integer("gst_rate_basis_points"),costPaise:integer("cost_paise"),
+ updatedAt:integer("updated_at").notNull(),
+},t=>[uniqueIndex("idx_tally_masters_owner_kind_name").on(t.ownerUserId,t.kind,t.name)]);
 
 export const tallyBillAllocations=sqliteTable("tally_bill_allocations",{
  id:text("id").primaryKey(),ownerUserId:text("owner_user_id").notNull(),documentId:text("document_id").notNull(),
@@ -247,6 +273,12 @@ export const invoices = sqliteTable(
     customerAddress: text("customer_address"),
     placeOfSupply: text("place_of_supply"),
     supplyType: text("supply_type").notNull().default("intra_state"),
+    sellerLegalName: text("seller_legal_name"),
+    sellerTradeName: text("seller_trade_name"),
+    sellerGstin: text("seller_gstin"),
+    sellerPan: text("seller_pan"),
+    sellerAddress: text("seller_address"),
+    sellerState: text("seller_state"),
     subtotalPaise: integer("subtotal_paise").notNull(),
     discountPaise: integer("discount_paise").notNull().default(0),
     cgstPaise: integer("cgst_paise").notNull().default(0),
@@ -829,6 +861,8 @@ export const backupSnapshots = sqliteTable(
     recordCount: integer("record_count").notNull().default(0),
     status: text("status").notNull().default("verified"),
     note: text("note"),
+    data: text("data"),
+    checksum: text("checksum"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   },
   (table) => [index("idx_backup_snapshots_owner_date").on(table.ownerUserId, table.createdAt)],

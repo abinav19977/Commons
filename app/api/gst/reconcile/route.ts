@@ -22,6 +22,16 @@ const gstin = (value: string) => value.toUpperCase().replace(/\s/g, "");
 const paise = (value = "") => Math.round((Number(value.replace(/[,₹\s]/g, "")) || 0) * 100);
 function pick(row: Row, names: string[]) { for (const name of names) if (row[key(name)] !== undefined) return row[key(name)]; return ""; }
 
+export async function GET(request: Request) {
+  const user = await getChatGPTUser(request); if (!user) return NextResponse.json({ message: "Please sign in again." }, { status: 401 });
+  const taxPeriod = new URL(request.url).searchParams.get("taxPeriod") || "";
+  if (!/^\d{4}-\d{2}$/.test(taxPeriod)) return NextResponse.json({ message: "Choose a tax month." }, { status: 400 });
+  const rows = (await getRawDb().prepare(
+    "SELECT g.id,g.invoice_number,g.supplier_name,g.match_status,g.matched_purchase_id,p.itc_eligible,p.reverse_charge FROM gst_2b_entries g LEFT JOIN purchases p ON p.id=g.matched_purchase_id AND p.owner_user_id=g.owner_user_id WHERE g.owner_user_id=? AND g.tax_period=? AND g.match_status!='matched' ORDER BY g.invoice_number",
+  ).bind(user.id, taxPeriod).all<{ id: string; invoice_number: string; supplier_name: string | null; match_status: string; matched_purchase_id: string | null; itc_eligible: number | null; reverse_charge: number | null }>()).results || [];
+  return NextResponse.json({ entries: rows });
+}
+
 export async function POST(request: Request) {
   const user = await getChatGPTUser(request); if (!user) return NextResponse.json({ message: "Please sign in again." }, { status: 401 });
   const parsed = schema.safeParse(await request.json().catch(() => null)); if (!parsed.success) return NextResponse.json({ message: "Choose a tax month and upload a valid CSV file under 8 MB." }, { status: 400 });

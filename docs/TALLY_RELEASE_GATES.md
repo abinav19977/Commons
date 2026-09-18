@@ -55,7 +55,7 @@ No real TallyPrime company, Windows executable, government endpoint or accountan
 
 ## Repository and hosting
 
-The app currently depends on Sites/Cloudflare D1 and platform-issued identity headers. A GitHub repository stores source; creating it does not migrate the live database, authentication or deployment. Do not expose the Worker directly on a public host that accepts client-forged identity headers. A different hosting platform requires a separately implemented and verified authentication boundary.
+The app depends on Cloudflare D1 for storage and ships its own email/password authentication (`accounts` and `account_sessions` tables, `app/chatgpt-auth.ts`, `app/session.ts`) — there is no platform-issued identity header to trust or forge. A GitHub repository stores source; creating it does not migrate the live database or deployment. Session cookies are httpOnly/secure and hold only a hashed-token reference, never raw credentials.
 
 No API keys, connector DPAPI files, local recovery databases or customer exports belong in Git.
 

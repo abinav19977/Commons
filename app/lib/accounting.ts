@@ -128,6 +128,39 @@ export function purchaseEntry(taxablePaise: number, taxPaise: number, inventory 
   ];
 }
 
+// Corrects a purchase's GST treatment after the fact (e.g. GSTR-2B reconciliation
+// reveals it should have been booked ITC-ineligible or reverse-charge). Returns just
+// the delta between the original purchaseEntry() postings and the corrected ones, so
+// the untouched inventory/expense value isn't re-posted, only what actually changed.
+export function purchaseGstCorrectionEntry(
+  taxablePaise: number,
+  taxPaise: number,
+  inventory: boolean,
+  fromItcEligible: boolean,
+  fromReverseCharge: boolean,
+  toItcEligible: boolean,
+  toReverseCharge: boolean,
+): BookLine[] {
+  const before = purchaseEntry(taxablePaise, taxPaise, inventory, fromItcEligible, fromReverseCharge);
+  const after = purchaseEntry(taxablePaise, taxPaise, inventory, toItcEligible, toReverseCharge);
+  const net = new Map<string, { name: string; amount: number }>();
+  const apply = (lines: BookLine[], sign: number) => {
+    for (const line of lines) {
+      const current = net.get(line.accountCode) || { name: line.accountName, amount: 0 };
+      current.amount += sign * (line.debitPaise - line.creditPaise);
+      net.set(line.accountCode, current);
+    }
+  };
+  apply(before, -1);
+  apply(after, 1);
+  const lines: BookLine[] = [];
+  for (const [accountCode, { name, amount }] of net) {
+    if (amount === 0) continue;
+    lines.push({ accountCode, accountName: name, debitPaise: amount > 0 ? amount : 0, creditPaise: amount < 0 ? -amount : 0 });
+  }
+  return lines;
+}
+
 export function assetAcquisitionEntry(costPaise:number,paymentAccountCode:"1000"|"1010"|"2000"):BookLine[]{const names={"1000":"Cash in hand","1010":"Bank account","2000":"Supplier money due"};return [{accountCode:"1500",accountName:"Fixed assets",debitPaise:costPaise,creditPaise:0},{accountCode:paymentAccountCode,accountName:names[paymentAccountCode],debitPaise:0,creditPaise:costPaise}]}
 export function depreciationEntry(amountPaise:number):BookLine[]{return [{accountCode:"6200",accountName:"Depreciation expense",debitPaise:amountPaise,creditPaise:0},{accountCode:"1510",accountName:"Accumulated depreciation",debitPaise:0,creditPaise:amountPaise}]}
 export function periodAdjustmentEntry(type:"provision"|"bad_debt"|"income_tax",amountPaise:number):BookLine[]{if(type==="income_tax")return [{accountCode:"6400",accountName:"Income tax expense",debitPaise:amountPaise,creditPaise:0},{accountCode:"2310",accountName:"Income tax payable",debitPaise:0,creditPaise:amountPaise}];return [{accountCode:"6300",accountName:"Provisions and bad debts",debitPaise:amountPaise,creditPaise:0},{accountCode:type==="bad_debt"?"1520":"2300",accountName:type==="bad_debt"?"Allowance for doubtful accounts":"Provisions and accrued expenses",debitPaise:0,creditPaise:amountPaise}]}

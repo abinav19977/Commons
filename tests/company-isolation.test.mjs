@@ -62,7 +62,7 @@ test("server rejects foreign selection, stale tabs, missing pins and cross-compa
 });
 
 test("every existing business API resolves the company before using data",()=>{
- function scan(dir){for(const entry of readdirSync(dir,{withFileTypes:true})){const path=dir+"/"+entry.name;if(entry.isDirectory())scan(path);else if(path.endsWith("route.ts")&&!path.includes("/companies/")){const source=readFileSync(path,"utf8");if(path==="app/api/integrations/tally/connector/route.ts")assert.match(source,/await authenticateBridge\(request\)/);else assert.match(source,/company-auth/,path);assert.doesNotMatch(source,/getChatGPTUser\(\)/,path);}}}
+ function scan(dir){for(const entry of readdirSync(dir,{withFileTypes:true})){const path=dir+"/"+entry.name;if(entry.isDirectory())scan(path);else if(path.endsWith("route.ts")&&!path.includes("/companies/")&&!path.includes("/api/auth/")){const source=readFileSync(path,"utf8");if(path==="app/api/integrations/tally/connector/route.ts")assert.match(source,/await authenticateBridge\(request\)/);else assert.match(source,/company-auth/,path);assert.doesNotMatch(source,/getChatGPTUser\(\)/,path);}}}
  scan("app/api");
 });
 

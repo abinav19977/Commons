@@ -55,12 +55,30 @@ export default function GstWorkspace({ history }: { history: FilingHistory[] }) 
   const [message, setMessage] = useState("");
   const [result, setResult] = useState<FilingResult | null>(null);
   const [reconciliation, setReconciliation] = useState<{matched:number;amountMismatch:number;portalOnly:number;booksOnly:number;message:string}|null>(null);
+  type MismatchEntry = { id: string; invoice_number: string; supplier_name: string | null; match_status: string; matched_purchase_id: string | null; itc_eligible: number | null; reverse_charge: number | null };
+  const [mismatches, setMismatches] = useState<MismatchEntry[]>([]);
+  const [correctionMessage, setCorrectionMessage] = useState("");
+
+  async function loadMismatches() {
+    try { const response = await companyFetch(`/api/gst/reconcile?taxPeriod=${period}`); const data = await response.json(); if (response.ok) setMismatches((data.entries || []).filter((entry: MismatchEntry) => entry.matched_purchase_id)); }
+    catch { /* non-critical, leave list empty */ }
+  }
 
   async function reconcile(file: File) {
     if (!file.name.toLowerCase().endsWith(".csv")) return setMessage("Download and upload the GSTR-2B file in CSV format.");
     setStatus("analysing"); setMessage("Reading and matching GSTR-2B…");
-    try { const response=await companyFetch("/api/gst/reconcile",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({taxPeriod:period,csv:await file.text()})}); const data=await response.json(); if(!response.ok)throw new Error(data.message||"Could not reconcile GSTR-2B."); setReconciliation(data);setMessage(data.message);setStatus("idle"); }
+    try { const response=await companyFetch("/api/gst/reconcile",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({taxPeriod:period,csv:await file.text()})}); const data=await response.json(); if(!response.ok)throw new Error(data.message||"Could not reconcile GSTR-2B."); setReconciliation(data);setMessage(data.message);setStatus("idle"); void loadMismatches(); }
     catch(error){setStatus("error");setMessage(error instanceof Error?error.message:"Could not reconcile GSTR-2B.")}
+  }
+
+  async function applyCorrection(purchaseId: string, itcEligible: boolean, reverseCharge: boolean) {
+    setCorrectionMessage("Applying correction…");
+    try {
+      const response = await companyFetch("/api/gst/correct", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ purchaseId, itcEligible, reverseCharge }) });
+      const data = await response.json();
+      setCorrectionMessage(data.message || (response.ok ? "Correction applied." : "Correction could not be applied."));
+      if (response.ok) void loadMismatches();
+    } catch { setCorrectionMessage("Correction could not be applied."); }
   }
 
   async function analyse(event: FormEvent<HTMLFormElement>) {
@@ -114,6 +132,24 @@ export default function GstWorkspace({ history }: { history: FilingHistory[] }) 
           <p>On the GST portal, download the selected month&apos;s GSTR-2B as CSV, then choose it here. Commons only compares the file with recorded purchases; it does not post or change your books.</p>
           <label className="dashboard-primary">Choose GSTR-2B CSV<input hidden type="file" accept=".csv,text/csv" onChange={event=>{const file=event.target.files?.[0];if(file)void reconcile(file)}} /></label>
           {reconciliation&&<p><b>{reconciliation.matched} matched</b> · {reconciliation.amountMismatch} amount differences · {reconciliation.portalOnly} only in portal · {reconciliation.booksOnly} only in books</p>}
+          {mismatches.length > 0 && (
+            <div className="gst-mismatch-list">
+              <strong>Correct GST treatment for matched purchases</strong>
+              <p>If reconciliation shows a purchase should be ITC-ineligible or reverse-charge, apply it here — this updates the purchase and posts an adjusting entry, so the books and this classification stay in agreement.</p>
+              {mismatches.map((entry) => (
+                <div key={entry.id} className="gst-mismatch-row">
+                  <span>{entry.invoice_number} · {entry.supplier_name || "Unknown supplier"}</span>
+                  <button type="button" className="table-action" onClick={() => applyCorrection(entry.matched_purchase_id!, !Boolean(entry.itc_eligible), Boolean(entry.reverse_charge))}>
+                    Mark {entry.itc_eligible ? "ITC-ineligible" : "ITC-eligible"}
+                  </button>
+                  <button type="button" className="table-action" onClick={() => applyCorrection(entry.matched_purchase_id!, Boolean(entry.itc_eligible), !Boolean(entry.reverse_charge))}>
+                    Mark {entry.reverse_charge ? "not reverse charge" : "reverse charge"}
+                  </button>
+                </div>
+              ))}
+              {correctionMessage && <p className="form-status idle">{correctionMessage}</p>}
+            </div>
+          )}
         </section>
 
         {result ? (

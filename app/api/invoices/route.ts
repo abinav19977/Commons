@@ -188,7 +188,7 @@ export async function POST(request: Request) {
   const statements = [
     raw
       .prepare(
-        "INSERT INTO invoices (id,owner_user_id,invoice_number,invoice_date,due_date,customer_id,customer_name,customer_gstin,customer_address,place_of_supply,supply_type,subtotal_paise,discount_paise,cgst_paise,sgst_paise,igst_paise,cess_paise,total_paise,status,notes,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO invoices (id,owner_user_id,invoice_number,invoice_date,due_date,customer_id,customer_name,customer_gstin,customer_address,place_of_supply,supply_type,seller_legal_name,seller_trade_name,seller_gstin,seller_pan,seller_address,seller_state,subtotal_paise,discount_paise,cgst_paise,sgst_paise,igst_paise,cess_paise,total_paise,status,notes,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       )
       .bind(
         id,
@@ -202,6 +202,12 @@ export async function POST(request: Request) {
         d.customerAddress || null,
         d.placeOfSupply || null,
         d.supplyType,
+        profile.legalName || null,
+        profile.tradeName || null,
+        profile.gstin || null,
+        profile.pan || null,
+        [profile.addressLine1, profile.addressLine2, profile.city, profile.state, profile.pinCode].filter(Boolean).join(", ") || null,
+        profile.state || null,
         subtotal,
         discount || 0,
         cgst,

@@ -1,7 +1,7 @@
 import { and, desc, eq, or } from "drizzle-orm";
 import { PackagePlus, ShoppingCart } from "lucide-react";
 import { notFound } from "next/navigation";
-import { getDb } from "../../../../db";
+import { getDb, getRawDb } from "../../../../db";
 import { purchases } from "../../../../db/schema";
 import { chatGPTSignOutPath, requireChatGPTUser } from "../../../company-auth";
 import CommonsAssistant from "../../../components/commons-assistant";
@@ -115,6 +115,20 @@ export default async function SupplierDetailPage({
     console.error("Supplier activity unavailable", error);
   }
   const purchased = supplierPurchases.reduce((sum, item) => sum + item.totalPaise, 0);
+  // Outstanding payable comes from the ledger itself (account "2000"), so it reflects
+  // payments, debit notes and purchase returns, not just the sum of purchase totals.
+  let outstandingPayable = 0;
+  try {
+    const row = await getRawDb()
+      .prepare(
+        "SELECT COALESCE(SUM(jl.credit_paise - jl.debit_paise),0) AS net FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id WHERE jl.owner_user_id = ? AND jl.party_id = ? AND jl.account_code = '2000' AND je.status = 'posted'",
+      )
+      .bind(user.id, supplier.id)
+      .first<{ net: number }>();
+    outstandingPayable = Math.max(0, (supplier.openingPayablePaise || 0) + (row?.net || 0));
+  } catch (error) {
+    console.error("Supplier payable balance unavailable", error);
+  }
 
   return (
     <main className="form-shell">
@@ -150,6 +164,7 @@ export default async function SupplierDetailPage({
         <section id="summary" className="profile-section" aria-labelledby="supplier-summary-title">
           <h2 id="supplier-summary-title">Summary</h2>
           <div className="summary-grid">
+            <div><span>Outstanding payable</span><strong>{money(outstandingPayable)}</strong></div>
             <div><span>Total purchased</span><strong>{money(purchased)}</strong></div>
             <div><span>Purchases</span><strong>{supplierPurchases.length}</strong></div>
             <div><span>Products</span><strong>{supplierProducts.length}</strong></div>

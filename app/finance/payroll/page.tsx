@@ -12,6 +12,14 @@ function Mark() {
 
 export default async function PayrollPage() {
   const user = await requireChatGPTUser("/finance/payroll");
+  if (!["owner", "accountant"].includes(user.role)) {
+    return (
+      <main className="form-shell">
+        <header className="site-header workspace-header"><a className="wordmark" href="/finance" aria-label="Back to Finance"><Mark /></a><a className="header-action" href={chatGPTSignOutPath("/")}>Sign out</a></header>
+        <section className="operations-page"><a className="back-link" href="/finance">← Finance</a><div className="operations-heading"><span>People finance</span><h1>Salary tracking</h1></div><p className="directory-notice">Owner or accountant access is required to view payroll and salary data.</p></section>
+      </main>
+    );
+  }
   let payroll: PayrollView[] = [];
   let employees: PayrollEmployee[] = [];
   let unavailable = false;

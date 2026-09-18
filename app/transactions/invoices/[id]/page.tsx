@@ -108,6 +108,11 @@ async function Invoice({ id }: { id: string }) {
         customerAddress: row.customerAddress,
         placeOfSupply: row.placeOfSupply,
         supplyType: row.supplyType,
+        sellerLegalName: row.sellerLegalName,
+        sellerTradeName: row.sellerTradeName,
+        sellerGstin: row.sellerGstin,
+        sellerPan: row.sellerPan,
+        sellerAddress: row.sellerAddress,
         subtotalPaise: row.subtotalPaise,
         discountPaise: row.discountPaise,
         cgstPaise: row.cgstPaise,
@@ -141,15 +146,19 @@ async function Invoice({ id }: { id: string }) {
         Business profile is unavailable for this invoice.
       </div>
     );
-  const sellerAddress = [
-    profile.addressLine1,
-    profile.addressLine2,
-    profile.city,
-    profile.state,
-    profile.pinCode,
-  ]
-    .filter(Boolean)
-    .join(", ");
+  // Prefer the seller identity snapshotted onto the invoice at issue time, so a later
+  // change to the business profile (GSTIN, address, name) never rewrites what an
+  // already-issued invoice displays. Older invoices predate the snapshot and fall
+  // back to today's live profile, same as before this fix.
+  const sellerLegalName = invoice.sellerLegalName || profile.legalName;
+  const sellerTradeName = invoice.sellerTradeName || profile.tradeName;
+  const sellerGstin = invoice.sellerGstin || profile.gstin;
+  const sellerPan = invoice.sellerPan || profile.pan;
+  const sellerAddress =
+    invoice.sellerAddress ||
+    [profile.addressLine1, profile.addressLine2, profile.city, profile.state, profile.pinCode]
+      .filter(Boolean)
+      .join(", ");
   return (
     <>
       <div className="invoice-actions no-print">
@@ -162,10 +171,10 @@ async function Invoice({ id }: { id: string }) {
         <header className="invoice-header">
           <div>
             <span className="invoice-kicker">Tax invoice</span>
-            <h1>{profile.tradeName || profile.legalName}</h1>
+            <h1>{sellerTradeName || sellerLegalName}</h1>
             <p>{sellerAddress}</p>
             <p>
-              GSTIN: {profile.gstin || "—"} · PAN: {profile.pan || "—"}
+              GSTIN: {sellerGstin || "—"} · PAN: {sellerPan || "—"}
             </p>
           </div>
           <div className="invoice-number">

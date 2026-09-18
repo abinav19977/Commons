@@ -127,6 +127,27 @@
       "when": 1789552775137,
       "tag": "0018_curved_shiva",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1789644885809,
+      "tag": "0019_lonely_jetstream",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1789656574908,
+      "tag": "0020_known_marvex",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1789664521152,
+      "tag": "0021_nasty_killmonger",
+      "breakpoints": true
     }
   ]
 }

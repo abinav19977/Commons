@@ -26,6 +26,8 @@ export async function POST(request: Request) {
   const user = await getChatGPTUser(request);
   if (!user)
     return NextResponse.json({ message: "Please sign in again." }, { status: 401 });
+  if (!["owner", "accountant"].includes(user.role))
+    return NextResponse.json({ message: "Owner or accountant access is required for payroll." }, { status: 403 });
   const parsed = schema.safeParse(await request.json().catch(() => null));
   if (!parsed.success)
     return NextResponse.json(

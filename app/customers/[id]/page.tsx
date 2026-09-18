@@ -106,13 +106,14 @@ async function CustomerDetail({ id }: { id: string }) {
   const isDemo = Boolean(customer);
   let unavailable = false;
   let transactions: CustomerTransaction[] = demoTransactionsByCustomer[id] || [];
+  let ledgerReceivablePaise: number | null = null;
 
   if (!customer) {
     try {
       customer = await findCustomer(user.id, id);
       if (customer) {
         const raw = getRawDb();
-        const [invoiceRows, paymentRows] = await Promise.all([
+        const [invoiceRows, paymentRows, ledgerRow] = await Promise.all([
           raw
             .prepare(
               "SELECT invoice_date,invoice_number,total_paise,status FROM invoices WHERE owner_user_id = ? AND customer_id = ? ORDER BY invoice_date DESC",
@@ -125,7 +126,14 @@ async function CustomerDetail({ id }: { id: string }) {
             )
             .bind(user.id, user.id, id)
             .all<Record<string, unknown>>(),
+          raw
+            .prepare(
+              "SELECT COALESCE(SUM(jl.debit_paise - jl.credit_paise),0) AS net FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id WHERE jl.owner_user_id = ? AND jl.party_id = ? AND jl.account_code = '1100' AND je.status = 'posted'",
+            )
+            .bind(user.id, id)
+            .first<{ net: number }>(),
         ]);
+        ledgerReceivablePaise = ledgerRow?.net ?? 0;
         transactions = [
           ...(invoiceRows.results || []).map((row) => ({
             date: String(row.invoice_date),
@@ -163,9 +171,12 @@ async function CustomerDetail({ id }: { id: string }) {
   const received = transactions
     .filter((item) => item.type === "Payment")
     .reduce((sum, item) => sum + item.amountPaise, 0);
+  // Prefer the ledger's own receivable balance (it reflects credit notes, write-offs
+  // and manual corrections, not just invoices matched to bank transactions). Demo
+  // customers have no ledger postings, so they fall back to the invoice-based estimate.
   const outstanding = Math.max(
     0,
-    customer.openingBalancePaise + invoiced - received,
+    customer.openingBalancePaise + (ledgerReceivablePaise ?? invoiced - received),
   );
 
   return (

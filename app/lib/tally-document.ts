@@ -39,9 +39,23 @@ export function scaled(value:string,scale=100){
  const number=Number(exact);if(!Number.isSafeInteger(number))throw Error("Amount exceeds supported precision.");return number;
 }
 export function tallyDate(text:string){if(!/^\d{8}$/.test(text))return "";const result=`${text.slice(0,4)}-${text.slice(4,6)}-${text.slice(6,8)}`;const date=new Date(result+"T00:00:00Z");return Number.isFinite(date.getTime())&&date.toISOString().slice(0,10)===result?result:"";}
+// TallyPrime sometimes emits both an "ALL..." list and its plain-named counterpart for
+// the same voucher, but the plain one can be an incomplete subset rather than a true
+// duplicate (confirmed on a real GST sales voucher: LEDGERENTRIES.LIST omitted the sales
+// ledger that ALLLEDGERENTRIES.LIST included, so counting both doubled every other line
+// and silently dropped the sales one from the "seen twice" total). When the "ALL" list is
+// present it is the complete, authoritative one — use it alone; fall back to the plain
+// list only when "ALL" is absent entirely.
+function preferAllList(nodes:XmlNode[],allName:string,plainName:string){
+ const all=nodes.filter(n=>n.name===allName);
+ return all.length?all:nodes.filter(n=>n.name===plainName);
+}
+export function inventoryEntryNodes(node:XmlNode){
+ return [...preferAllList(node.children,"ALLINVENTORYENTRIES.LIST","INVENTORYENTRIES.LIST"),...node.children.filter(n=>["INVENTORYENTRIESIN.LIST","INVENTORYENTRIESOUT.LIST"].includes(n.name))];
+}
 export function accountingLedgerNodes(node:XmlNode){
- const direct=node.children.filter(n=>["ALLLEDGERENTRIES.LIST","LEDGERENTRIES.LIST"].includes(n.name));
- const inventory=node.children.filter(n=>["ALLINVENTORYENTRIES.LIST","INVENTORYENTRIES.LIST","INVENTORYENTRIESIN.LIST","INVENTORYENTRIESOUT.LIST"].includes(n.name));
+ const direct=preferAllList(node.children,"ALLLEDGERENTRIES.LIST","LEDGERENTRIES.LIST");
+ const inventory=inventoryEntryNodes(node);
  const nested=inventory.flatMap(n=>children(n,"ACCOUNTINGALLOCATIONS.LIST"));
  const key=(n:XmlNode)=>value(n,"LEDGERNAME").trim().toLowerCase();
  // Some exports repeat the same ledger at voucher and item level. Count it once,
@@ -61,7 +75,7 @@ export function documentFromNode(node:XmlNode){
   name:value(n,"LEDGERNAME"),amount:scaled(value(n,"AMOUNT")),party:value(n,"ISPARTYLEDGER").toLowerCase()==="yes",
   bills:children(n,"BILLALLOCATIONS.LIST").filter(b=>b.children.length>0||b.text.trim()||Object.keys(b.attrs).length>0).map(b=>({reference:value(b,"NAME"),type:value(b,"BILLTYPE"),amount:scaled(value(b,"AMOUNT")),dueDate:tallyDate(value(b,"BILLCREDITPERIOD"))})),
  }));
- const items=node.children.filter(n=>["ALLINVENTORYENTRIES.LIST","INVENTORYENTRIES.LIST","INVENTORYENTRIESIN.LIST","INVENTORYENTRIESOUT.LIST"].includes(n.name)).map(n=>({
+ const items=inventoryEntryNodes(node).filter(n=>n.children.length>0).map(n=>({
   name:value(n,"STOCKITEMNAME"),...quantity(value(n,"ACTUALQTY")||value(n,"BILLEDQTY")),amount:scaled(value(n,"AMOUNT")),hsn:value(n,"GSTHSNNAME")||value(n,"HSNCODE"),rates:descendants(n,"RATEDETAILS.LIST").map(r=>({head:value(r,"GSTRATEDUTYHEAD"),basisPoints:scaled(value(r,"GSTRATE")||"0")})),
   batches:children(n,"BATCHALLOCATIONS.LIST").map(b=>({name:value(b,"BATCHNAME")||"Primary Batch",warehouse:value(b,"GODOWNNAME")||"Main Location",...quantity(value(b,"ACTUALQTY")||value(b,"BILLEDQTY")),manufactured:tallyDate(value(b,"MFDON")),expiry:tallyDate(value(b,"EXPIRYPERIOD"))})),
  }));

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getRawDb } from "../../../../db";
+import { and, eq } from "drizzle-orm";
+import { getDb, getRawDb } from "../../../../db";
+import { customers, suppliers } from "../../../../db/schema";
 import { getChatGPTUser } from "../../../company-auth";
 import { adjustmentEntry, rupeesToPaise } from "../../../lib/accounting";
 import { assertPeriodOpen, prepareJournal } from "../../../lib/book-server";
@@ -11,6 +13,8 @@ const schema = z.object({
   documentDate: z.string().length(10),
   originalReference: z.string().trim().max(100).optional().default(""),
   partyName: z.string().trim().min(1).max(160),
+  customerId: z.string().trim().max(80).optional().default(""),
+  supplierId: z.string().trim().max(80).optional().default(""),
   taxableAmount: z.string(),
   gstAmount: z.string().optional().default("0"),
   reason: z.string().trim().min(3).max(500),
@@ -30,6 +34,19 @@ export async function POST(request: Request) {
   const quantityMilli = Math.round(Number(d.quantity || 0) * 1000);
   if (!taxable || gst === null || !Number.isFinite(quantityMilli) || quantityMilli < 0) {
     return NextResponse.json({ message: "Enter valid amounts and quantity." }, { status: 400 });
+  }
+  const isCustomerParty = d.documentType === "credit_note" || d.documentType === "sales_return";
+  let partyId: string | null = null;
+  if (isCustomerParty && d.customerId) {
+    const [match] = await getDb().select({ id: customers.id }).from(customers)
+      .where(and(eq(customers.id, d.customerId), eq(customers.ownerUserId, user.id))).limit(1);
+    if (!match) return NextResponse.json({ message: "Select a valid customer." }, { status: 400 });
+    partyId = match.id;
+  } else if (!isCustomerParty && d.supplierId) {
+    const [match] = await getDb().select({ id: suppliers.id }).from(suppliers)
+      .where(and(eq(suppliers.id, d.supplierId), eq(suppliers.ownerUserId, user.id))).limit(1);
+    if (!match) return NextResponse.json({ message: "Select a valid supplier." }, { status: 400 });
+    partyId = match.id;
   }
   try {
     await assertPeriodOpen(user.id, d.documentDate);
@@ -57,7 +74,11 @@ export async function POST(request: Request) {
       sourceType: d.documentType,
       sourceId: id,
       description,
-      lines: adjustmentEntry(d.documentType, taxable, gst, inventoryCost),
+      lines: adjustmentEntry(d.documentType, taxable, gst, inventoryCost).map((line) =>
+        (line.accountCode === "1100" || line.accountCode === "2000")
+          ? { ...line, partyType: isCustomerParty ? ("customer" as const) : ("supplier" as const), partyId, partyName: d.partyName }
+          : line,
+      ),
     });
     const raw = getRawDb();
     const statements = [

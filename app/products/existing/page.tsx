@@ -53,7 +53,9 @@ export default async function ExistingProductsPage() {
     console.error("Product list unavailable", error);
     unavailable = true;
   }
-  const directory = savedProducts;
+  const RENDER_CAP = 300;
+  const total = savedProducts.length;
+  const directory = savedProducts.slice(0, RENDER_CAP);
 
   return (
     <main className="form-shell">
@@ -74,11 +76,16 @@ export default async function ExistingProductsPage() {
         </a>
         <div className="directory-heading">
           <h1 id="product-directory-title">Products</h1>
-          <span>{directory.length.toString().padStart(2, "0")}</span>
+          <span>{total.toString().padStart(2, "0")}</span>
         </div>
         {unavailable && (
           <p className="directory-notice">
             Saved products are temporarily unavailable.
+          </p>
+        )}
+        {total > RENDER_CAP && (
+          <p className="directory-notice">
+            Showing the first {RENDER_CAP} of {total} products. Use search to find a specific one.
           </p>
         )}
         <ListToolbar filters={[{label:"Services",value:"Service"},{label:"Physical products",value:"PCS"}]}/>

@@ -55,6 +55,41 @@ export const TALLY_LEDGER_MAP: Record<string, { code: string; name: string }> = 
   "salaries & wages": { code: "6100", name: "Salary expense" },
 };
 
+// Reserved TallyPrime primary groups that map unambiguously to one Commons account,
+// keyed by the top-level group name the connector resolves by walking each ledger's
+// parent chain up to a group with no parent of its own.
+const GROUP_ACCOUNT_CODES: Record<string, string> = {
+  "bank accounts": "1010",
+  "cash-in-hand": "1000",
+  "sundry debtors": "1100",
+  "stock-in-hand": "1200",
+  "sundry creditors": "2000",
+  "sales accounts": "4000",
+  "direct incomes": "4010",
+  "indirect incomes": "4010",
+  "purchase accounts": "5000",
+  "direct expenses": "6000",
+  "indirect expenses": "6000",
+  "capital account": "3000",
+  "reserves & surplus": "3200",
+  "fixed assets": "1500",
+  // Standard (built-in) Tally subgroups, not just the top 14 above. A bank overdraft
+  // account is posted like any other bank ledger; Provisions is where custom sub-groups
+  // like "Wage Payable" or "GST Payable" nest, and Commons already has a matching account.
+  "bank od a/c": "1010",
+  "provisions": "2300",
+};
+
+// "Duties & Taxes" holds both ITC (asset) and payable (liability) ledgers, so the
+// group alone is ambiguous — fall back to the ledger's own name for that one group.
+export function resolveMasterLedgerCode(name: string, topGroup: string | null): string | undefined {
+  const key = name.toLowerCase().trim();
+  if (key.includes("itc") || ["cgst", "sgst", "igst", "input cgst", "input sgst", "input igst"].includes(key)) return "1300";
+  const group = (topGroup || "").toLowerCase().trim();
+  if (group === "duties & taxes") return key.includes("cgst") || key.includes("sgst") || key.includes("igst") ? "2100" : undefined;
+  return GROUP_ACCOUNT_CODES[group];
+}
+
 export function xmlEscape(value: unknown) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -80,7 +115,15 @@ export function parseTallyVouchers(xml:string,parties:{customers:string[];suppli
    if(!name||!mapped){issues.push(name?`Map ledger “${name}”`:"Missing ledger name");continue;}
    const amount=scaled(value(entry,"AMOUNT"));if(!amount)continue;
    const deemed=value(entry,"ISDEEMEDPOSITIVE").toLowerCase();
-   if(deemed&&!['yes','no'].includes(deemed)||deemed&&((deemed==='yes')!==(amount<0))){issues.push("Ledger debit/credit sign disagrees for "+name);continue;}
+   // For most ledgers ISDEEMEDPOSITIVE reliably mirrors this entry's own debit/credit
+   // sign, so a mismatch is a real red flag. For a Rounding-type ledger, TallyPrime
+   // instead reports the ledger's configured default side regardless of which way this
+   // specific adjustment actually goes (confirmed against real exports: the same "ROUND
+   // OFF" ledger shows ISDEEMEDPOSITIVE="No" whether the amount is +0.20 or -0.44) — so
+   // the cross-check is skipped there and the amount's own sign, already authoritative
+   // for the posted debit/credit below, is trusted on its own.
+   const isRounding=key.includes("round");
+   if(!isRounding&&(deemed&&!['yes','no'].includes(deemed)||deemed&&((deemed==='yes')!==(amount<0)))){issues.push("Ledger debit/credit sign disagrees for "+name);continue;}
    lines.push({accountCode:mapped.code,accountName:mapped.name,debitPaise:Math.max(0,-amount),creditPaise:Math.max(0,amount)});
   }
   const debits=lines.reduce((s,l)=>s+l.debitPaise,0),credits=lines.reduce((s,l)=>s+l.creditPaise,0);

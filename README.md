@@ -15,7 +15,7 @@ npm run install:ci
 npm run dev
 ```
 
-The app uses platform-issued authentication. A GitHub checkout is not a standalone replacement for the Sites authentication gateway. Do not deploy a public endpoint that trusts arbitrary client-supplied identity headers.
+The app owns its own authentication: email/password accounts and sessions live in `accounts` and `account_sessions` (see `app/chatgpt-auth.ts`, `app/session.ts`, `app/lib/password.ts`), with sign-up/sign-in/sign-out served locally at `/signup`, `/login` and `/logout`. There is no dependency on OpenAI's hosting platform for identity.
 
 ## Verification
 

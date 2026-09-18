@@ -65,6 +65,14 @@ class Tests(unittest.TestCase):
         self.assertEqual(root.findtext('.//SVCURRENTCOMPANY'),'A & B')
         self.assertEqual(root.findtext('.//SVFROMDATE'),'20260909')
 
+    def test_voucher_collection_explicitly_requests_ledger_entry_lists(self):
+        # FETCH:* alone does not reliably return ALLLEDGERENTRIES.LIST for plain
+        # accounting vouchers on some TallyPrime builds; NATIVEMETHOD must ask for it.
+        root=parse_xml(collection_xml('Voucher','My business','2026-09-09','2026-09-09'))
+        native=root.findtext('.//NATIVEMETHOD')
+        self.assertIn('ALLLEDGERENTRIES.LIST',native)
+        self.assertIn('LEDGERENTRIES.LIST',native)
+
 class AllocationVerificationTests(unittest.TestCase):
     def test_unchanged_ledger_totals_cannot_hide_a_changed_bill_reference(self):
         original=VOUCHER.replace('</ALLLEDGERENTRIES.LIST>','<BILLALLOCATIONS.LIST><NAME>INV-1</NAME><BILLTYPE>Agst Ref</BILLTYPE><AMOUNT>100</AMOUNT></BILLALLOCATIONS.LIST></ALLLEDGERENTRIES.LIST>',1)
@@ -109,5 +117,38 @@ class CompanyDiscoveryTests(unittest.TestCase):
         transport.tally=lambda request: ET.fromstring('<ENVELOPE><COLLECTION/></ENVELOPE>')
         with self.assertRaisesRegex(ValueError,'reachable.*stable GUID'):
             transport.companies()
+
+class TransportVoucherParsingTests(unittest.TestCase):
+    def test_cmpinfo_voucher_counter_is_not_mistaken_for_a_real_voucher(self):
+        # Every real Tally response wraps DATA in a CMPINFO block that includes its
+        # own <VOUCHER>0</VOUCHER> counter tag, sharing a name with real vouchers.
+        transport=object.__new__(Transport)
+        transport.tally=lambda request: ET.fromstring(
+            '<ENVELOPE><BODY><DESC><CMPINFO><COMPANY>0</COMPANY><VOUCHER>0</VOUCHER></CMPINFO></DESC>'
+            '<DATA><COLLECTION>'+VOUCHER+'</COLLECTION></DATA></BODY></ENVELOPE>'
+        )
+        rows=transport.vouchers('My business','2026-09-09')
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0].findtext('GUID'),'voucher-1')
+
+class ApiRequestTests(unittest.TestCase):
+    def test_api_identifies_itself_instead_of_using_the_blockable_default_user_agent(self):
+        # Cloudflare's bot protection on the deployed domain returns HTTP 403
+        # (error 1010) for Python's default "Python-urllib/x.y" User-Agent.
+        transport=Transport('token',9000)
+        captured=[]
+        class FakeOpener:
+            def open(self,request,timeout=None):
+                captured.append(request)
+                class Resp:
+                    def __enter__(self):return self
+                    def __exit__(self,*a):return False
+                    def read(self,*a):return b'{"ok":true}'
+                return Resp()
+        transport.cloud=FakeOpener()
+        transport.api({'action':'poll'})
+        self.assertEqual(len(captured),1)
+        self.assertNotIn('Python-urllib',captured[0].get_header('User-agent') or '')
+        self.assertTrue(captured[0].get_header('User-agent'))
 
 if __name__=='__main__':unittest.main()

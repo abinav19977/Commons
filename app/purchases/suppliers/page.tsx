@@ -29,7 +29,9 @@ export default async function SuppliersPage() {
     console.error("Supplier list unavailable", error);
     unavailable = true;
   }
-  const directory = saved;
+  const RENDER_CAP = 300;
+  const total = saved.length;
+  const directory = saved.slice(0, RENDER_CAP);
   return (
     <main className="form-shell">
       <header className="site-header workspace-header">
@@ -43,6 +45,7 @@ export default async function SuppliersPage() {
           <a className="dashboard-primary compact-action" href="/purchases/suppliers/new">+ Add supplier</a>
         </div>
         {unavailable && <p className="directory-notice">Saved suppliers are temporarily unavailable.</p>}
+        {total > RENDER_CAP && <p className="directory-notice">Showing the first {RENDER_CAP} of {total} suppliers. Use search to find a specific one.</p>}
         <ListToolbar filters={[{label:"GST suppliers",value:"GST"},{label:"Non-GST suppliers",value:"Non-GST"}]}/>
         <div className="customer-list">
           {directory.map((supplier, index) => (

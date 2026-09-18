@@ -9,13 +9,14 @@ from pathlib import Path
 import queue
 import re
 import sqlite3
+import sys
 import threading
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
 
-SITE = "https://commons-daily-solutions.abinav1997.chatgpt.site"
-MAX_XML = 4_000_000
+SITE = "https://commons.abinavshanker-k-252.workers.dev"
+MAX_XML = 40_000_000
 PROTOCOL_VERSION = 2
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -35,7 +36,7 @@ def parse_xml(data):
         raise ValueError(error or "Tally rejected the request.")
     return root
 
-def collection_xml(kind, company="", start=None, end=None):
+def collection_xml(kind, company="", start=None, end=None, voucher_type=None):
     root = ET.Element("ENVELOPE")
     header = ET.SubElement(root, "HEADER")
     for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Collection"), ("ID", "CommonsCollection")]:
@@ -57,9 +58,65 @@ def collection_xml(kind, company="", start=None, end=None):
         # Native methods make the fields explicit for releases that otherwise
         # return an empty COMPANY element.
         ET.SubElement(coll, "NATIVEMETHOD").text = "Name,GUID"
+    if kind == "Voucher":
+        # FETCH:* silently drops nested ledger-entry list objects for plain
+        # accounting vouchers (Receipt/Payment/Journal) on some TallyPrime
+        # builds, even though it already returns nested inventory lists fine.
+        # Only ask for the ledger ones: also requesting the inventory list
+        # names here makes Tally emit an empty placeholder tag for vouchers
+        # with no items, which the item parser cannot distinguish from a
+        # real (malformed) line.
+        ET.SubElement(coll, "NATIVEMETHOD").text = "ALLLEDGERENTRIES.LIST,LEDGERENTRIES.LIST"
     if start and kind == "Voucher":
+        condition = "$Date >= ##SVFromDate AND $Date <= ##SVToDate"
+        if voucher_type:
+            condition += ' AND $VoucherTypeName = "' + voucher_type.replace('"', '\\"') + '"'
         ET.SubElement(coll, "FILTERS").text = "CommonsDates"
-        ET.SubElement(message, "SYSTEM", {"TYPE": "Formulae", "NAME": "CommonsDates"}).text = "$Date >= ##SVFromDate AND $Date <= ##SVToDate"
+        ET.SubElement(message, "SYSTEM", {"TYPE": "Formulae", "NAME": "CommonsDates"}).text = condition
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+def voucher_types_xml(company=""):
+    """List every voucher type name (built-in and custom) this company actually uses,
+    so a too-large day can be split automatically by real type names instead of a
+    hardcoded guess."""
+    root = ET.Element("ENVELOPE")
+    header = ET.SubElement(root, "HEADER")
+    for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Collection"), ("ID", "CommonsVoucherTypes")]:
+        ET.SubElement(header, name).text = value
+    desc = ET.SubElement(ET.SubElement(root, "BODY"), "DESC")
+    variables = ET.SubElement(desc, "STATICVARIABLES")
+    ET.SubElement(variables, "SVEXPORTFORMAT").text = "$$SysName:XML"
+    if company:
+        ET.SubElement(variables, "SVCURRENTCOMPANY").text = company
+    message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
+    coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsVoucherTypes", "ISMODIFY": "No"})
+    ET.SubElement(coll, "TYPE").text = "VoucherType"
+    ET.SubElement(coll, "FETCH").text = "Name"
+    ET.SubElement(coll, "NATIVEMETHOD").text = "NAME"
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+def masters_xml(kind, company=""):
+    """Export Group/Ledger/StockItem masters so Commons can auto-map ledgers by their
+    Tally group and pre-fill stock-item unit/GST rate/cost, instead of needing a manual
+    ledger-mapping spreadsheet for every company."""
+    root = ET.Element("ENVELOPE")
+    header = ET.SubElement(root, "HEADER")
+    for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Collection"), ("ID", "CommonsMasters" + kind)]:
+        ET.SubElement(header, name).text = value
+    desc = ET.SubElement(ET.SubElement(root, "BODY"), "DESC")
+    variables = ET.SubElement(desc, "STATICVARIABLES")
+    ET.SubElement(variables, "SVEXPORTFORMAT").text = "$$SysName:XML"
+    if company:
+        ET.SubElement(variables, "SVCURRENTCOMPANY").text = company
+    message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
+    coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsMasters" + kind, "ISMODIFY": "No"})
+    ET.SubElement(coll, "TYPE").text = kind
+    # Group/Ledger masters can run into the thousands; a full FETCH:* export of every
+    # field exceeds the 4 MB response cap. Naming exactly the fields needed keeps each
+    # StockItem record to a few KB instead of 20-30+ KB (confirmed: the full company's GST
+    # detail fits in ~1 MB total this way, well under the cap, in under 6 seconds).
+    ET.SubElement(coll, "FETCH").text = "Name,Parent,Baseunits,Openingrate,Gstdetails" if kind == "StockItem" else "Name,Parent"
+    ET.SubElement(coll, "NATIVEMETHOD").text = "NAME,PARENT,BASEUNITS,OPENINGRATE,GSTDETAILS.LIST,STATEWISEDETAILS.LIST,RATEDETAILS.LIST" if kind == "StockItem" else "NAME,PARENT"
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 def company_collection_xml():
@@ -76,6 +133,23 @@ def company_collection_xml():
     ET.SubElement(coll, "SOURCECOLLECTION").text = "List of Primary Companies"
     ET.SubElement(coll, "FETCH").text = "Name,GUID"
     ET.SubElement(coll, "NATIVEMETHOD").text = "Name,GUID"
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+def books_from_xml(company):
+    """The date this company's books actually start from, straight from Tally --
+    removes the one manual "receive from" date the connector used to require."""
+    root = ET.Element("ENVELOPE")
+    header = ET.SubElement(root, "HEADER")
+    for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Collection"), ("ID", "CommonsBooksFrom")]:
+        ET.SubElement(header, name).text = value
+    desc = ET.SubElement(ET.SubElement(root, "BODY"), "DESC")
+    variables = ET.SubElement(desc, "STATICVARIABLES")
+    ET.SubElement(variables, "SVEXPORTFORMAT").text = "$$SysName:XML"
+    message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
+    coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsBooksFrom", "ISMODIFY": "No"})
+    ET.SubElement(coll, "TYPE").text = "Company"
+    ET.SubElement(coll, "FETCH").text = "Name,Booksfrom"
+    ET.SubElement(coll, "NATIVEMETHOD").text = "NAME,BOOKSFROM"
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 def company_rows(root):
@@ -151,14 +225,16 @@ class Transport:
 
     def tally(self, xml):
         request = urllib.request.Request(self.local_url, data=xml if isinstance(xml, bytes) else xml.encode("utf-8"), headers={"Content-Type": "text/xml; charset=utf-8"})
-        with self.local.open(request, timeout=30) as response:
+        with self.local.open(request, timeout=180) as response:
             data = response.read(MAX_XML + 1)
         if len(data) > MAX_XML:
-            raise ValueError("Tally response exceeds 4 MB. Narrow the receiving period.")
+            raise ValueError(f"Tally response exceeds {MAX_XML // 1_000_000} MB. Narrow the receiving period.")
         return parse_xml(data)
 
     def api(self, payload):
-        request = urllib.request.Request(SITE + "/api/integrations/tally/connector", data=json.dumps({**payload,"protocolVersion":PROTOCOL_VERSION},ensure_ascii=False).encode(), headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
+        # Python's default User-Agent ("Python-urllib/x.y") is blocked by Cloudflare's
+        # bot protection on the deployed domain (error 1010); identify honestly instead.
+        request = urllib.request.Request(SITE + "/api/integrations/tally/connector", data=json.dumps({**payload,"protocolVersion":PROTOCOL_VERSION},ensure_ascii=False).encode(), headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json", "User-Agent": "CommonsTallyConnector/" + str(PROTOCOL_VERSION)})
         try:
             with self.cloud.open(request, timeout=30) as response:
                 data = response.read(200001)
@@ -186,11 +262,75 @@ class Transport:
             "Open the company at Gateway of Tally, then try again." + detail
         )
 
-    def vouchers(self, company, date):
-        root = self.tally(collection_xml("Voucher", company, date, date))
-        if root.find(".//COLLECTION") is None:
-            raise ValueError("Tally did not return a voucher collection. No voucher was sent.")
-        return root.findall(".//VOUCHER")
+    def books_from(self, company):
+        root = self.tally(books_from_xml(company))
+        for node in root.iter("COMPANY"):
+            name = (node.attrib.get("NAME") or node.findtext("NAME") or "").strip()
+            if name != company:
+                continue
+            raw_date = (node.findtext("BOOKSFROM") or "").strip()
+            if re.fullmatch(r"\d{8}", raw_date):
+                return dt.date(int(raw_date[0:4]), int(raw_date[4:6]), int(raw_date[6:8]))
+        return None
+
+    def masters(self, company):
+        return {
+            "groups": self.tally(masters_xml("Group", company)).findall(".//GROUP"),
+            "ledgers": self.tally(masters_xml("Ledger", company)).findall(".//LEDGER"),
+            "stockitems": self.tally(masters_xml("StockItem", company)).findall(".//STOCKITEM"),
+        }
+
+    def voucher_types(self, company):
+        root = self.tally(voucher_types_xml(company))
+        names = set()
+        for node in root.iter("VOUCHERTYPE"):
+            name = (node.attrib.get("NAME") or node.findtext("NAME") or "").strip()
+            if name:
+                names.add(name)
+        return sorted(names)
+
+    def vouchers(self, company, start, end=None):
+        end = end or start
+        try:
+            root = self.tally(collection_xml("Voucher", company, start, end))
+            if root.find(".//COLLECTION") is None:
+                raise ValueError("Tally did not return a voucher collection. No voucher was sent.")
+            # Scoped to COLLECTION children only: an unscoped ".//VOUCHER" also matches
+            # the unrelated <CMPINFO><VOUCHER>0</VOUCHER></CMPINFO> counter that Tally
+            # includes in every response, which has no fields and no GUID.
+            return root.findall(".//COLLECTION/VOUCHER")
+        except ValueError as error:
+            if "response exceeds" not in str(error):
+                raise
+            # This range can outgrow the 4 MB response cap. Split automatically by the
+            # company's own real voucher types instead -- still covers every voucher,
+            # just in smaller requests.
+            collected, seen = [], set()
+            for voucher_type in self.voucher_types(company):
+                try:
+                    type_root = self.tally(collection_xml("Voucher", company, start, end, voucher_type))
+                    type_vouchers = type_root.findall(".//COLLECTION/VOUCHER")
+                except ValueError as type_error:
+                    if "response exceeds" not in str(type_error):
+                        raise
+                    # Even one voucher type for this whole range is too big -- fall back
+                    # to day-by-day for just that type (recursion bottoms out at single
+                    # days, which cannot be split further).
+                    if start == end:
+                        raise
+                    type_vouchers = []
+                    day = dt.datetime.strptime(start, "%Y-%m-%d").date()
+                    last = dt.datetime.strptime(end, "%Y-%m-%d").date()
+                    while day <= last:
+                        day_root = self.tally(collection_xml("Voucher", company, day.isoformat(), day.isoformat(), voucher_type))
+                        type_vouchers.extend(day_root.findall(".//COLLECTION/VOUCHER"))
+                        day += dt.timedelta(days=1)
+                for voucher in type_vouchers:
+                    key = identity(voucher) or ET.tostring(voucher, encoding="unicode")
+                    if key not in seen:
+                        seen.add(key)
+                        collected.append(voucher)
+            return collected
 
 class Connector:
     def __init__(self, transport, company, guid, database):
@@ -199,6 +339,8 @@ class Connector:
         self.db.execute("CREATE TABLE IF NOT EXISTS results (id TEXT PRIMARY KEY, status TEXT NOT NULL, message TEXT NOT NULL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS received (scope TEXT, guid TEXT, digest TEXT, PRIMARY KEY(scope,guid))")
         self.scope = company + ":" + guid
+        self.masters_pushed = False
+        self.skipped = []
 
     def call(self, action, **payload):
         return self.transport.api({"action": action, "name": self.company, "guid": self.guid, **payload})
@@ -261,8 +403,111 @@ class Connector:
         except Exception as error:
             return ("uncertain" if attempted or job.get("checkOnly") else "blocked"), str(error)[:400]
 
+    def push_masters(self):
+        """Send Tally's Group/Ledger/StockItem masters to Commons once per run so ledger
+        mapping and stock-item GST rate/cost are resolved automatically instead of by hand."""
+        data = self.transport.masters(self.company)
+        def field(node, name):
+            child = node.find(name)
+            return (child.text or "").strip() if child is not None and child.text else ""
+        def name_of(node):
+            return (node.attrib.get("NAME") or field(node, "NAME")).strip()
+        group_parent = {}
+        for group in data["groups"]:
+            name = name_of(group)
+            if name:
+                group_parent[name] = field(group, "PARENT")
+        # Tally's own reserved groups (Bank Accounts, Sundry Debtors, Duties & Taxes, ...)
+        # are themselves nested under broader ones (Current Assets, Current Liabilities),
+        # so walking all the way to the ultimate root loses the specific group Commons
+        # actually maps. Stop at the nearest ancestor Commons recognises instead.
+        reserved_groups = {
+            "bank accounts", "cash-in-hand", "sundry debtors", "stock-in-hand", "sundry creditors",
+            "sales accounts", "direct incomes", "indirect incomes", "purchase accounts",
+            "direct expenses", "indirect expenses", "capital account", "reserves & surplus",
+            "fixed assets", "duties & taxes",
+            # Also standard (built-in) Tally subgroups, confirmed against a real company's
+            # group export: an overdraft account behaves like a bank ledger for posting
+            # purposes, and Provisions (e.g. "Wage Payable", "GST Payable" custom groups
+            # nest under it) has a direct Commons equivalent.
+            "bank od a/c", "provisions",
+        }
+        def top_group(name):
+            seen, current = set(), name
+            while current:
+                if current.strip().lower() in reserved_groups:
+                    return current
+                if current in seen or current not in group_parent:
+                    return ""
+                seen.add(current)
+                current = group_parent[current]
+            return ""
+        ledgers = []
+        for ledger in data["ledgers"]:
+            name = name_of(ledger)
+            if not name:
+                continue
+            parent = field(ledger, "PARENT")
+            ledgers.append({"name": name, "topGroup": top_group(parent) if parent else ""})
+        def gst_rate_basis_points(node):
+            # A stock item can carry several GSTDETAILS.LIST entries, one per date its
+            # rate last changed (APPLICABLEFROM) -- only the most recent one is the rate
+            # actually in effect now. Each has its own STATEWISEDETAILS.LIST/RATEDETAILS.LIST
+            # per duty head (CGST/SGST/UTGST/IGST/Cess); IGST alone already represents the
+            # full combined rate, so prefer it and fall back to CGST+SGST if IGST is unset.
+            entries = node.findall("GSTDETAILS.LIST")
+            if not entries:
+                return None
+            latest = max(entries, key=lambda e: (e.findtext("APPLICABLEFROM") or ""))
+            igst, split_total, seen = None, 0.0, set()
+            for state in latest.findall("STATEWISEDETAILS.LIST"):
+                for rate in state.findall("RATEDETAILS.LIST"):
+                    head = (rate.findtext("GSTRATEDUTYHEAD") or "").strip().lower()
+                    text = (rate.findtext("GSTRATE") or "").strip()
+                    if not head or not text:
+                        continue
+                    try:
+                        rate_value = float(text)
+                    except ValueError:
+                        continue
+                    if head == "igst":
+                        igst = rate_value
+                    elif head in ("cgst", "sgst/utgst", "sgst") and head not in seen:
+                        split_total += rate_value
+                        seen.add(head)
+                break  # only the first (company-wide "Any") state block is relevant here
+            effective = igst if igst else split_total
+            return round(effective * 100) if effective else None
+        stockitems = []
+        for item in data["stockitems"]:
+            name = name_of(item)
+            if not name:
+                continue
+            unit = field(item, "BASEUNITS")
+            cost_paise = None
+            match = re.match(r"([\d.]+)", field(item, "OPENINGRATE"))
+            if match:
+                try:
+                    cost_paise = round(float(match.group(1)) * 100)
+                except ValueError:
+                    pass
+            stockitems.append({"name": name, "unit": unit or None, "gstRateBasisPoints": gst_rate_basis_points(item), "costPaise": cost_paise})
+        # Commons caps each connector request body at 100 KB; a company can have
+        # thousands of ledgers/stock items, so send them in bounded chunks.
+        chunk = 250
+        for i in range(0, len(ledgers), chunk):
+            self.call("masters", ledgers=ledgers[i:i + chunk], stockItems=[])
+        for i in range(0, len(stockitems), chunk):
+            self.call("masters", ledgers=[], stockItems=stockitems[i:i + chunk])
+
     def cycle(self, receiving_day=None):
         self.verify_company()
+        if not self.masters_pushed:
+            try:
+                self.push_masters()
+            except Exception:
+                pass  # Master sync is best-effort; it must never block voucher sync.
+            self.masters_pushed = True
         self.flush_results()
         job = self.call("poll").get("job")
         result = "Connected. No approved outgoing vouchers waiting."
@@ -274,26 +519,61 @@ class Connector:
             result = status.capitalize() + ": " + message
         if receiving_day:
             incoming = self.transport.vouchers(self.company, receiving_day)
-            if len(incoming) > 500:
-                raise ValueError("More than 500 vouchers in this day. Use manual XML exchange for this date.")
-            count = 0
-            for voucher in incoming:
-                guid = identity(voucher)
-                if not guid:
-                    raise ValueError("Incoming voucher has no stable GUID. Receive stopped for review.")
-                xml = ET.tostring(voucher, encoding="unicode")
-                if len(xml.encode("utf-8")) > 64000:
-                    raise ValueError("An incoming voucher exceeds 64 KB. Use manual XML import for this date.")
-                value = hashlib.sha256(xml.encode()).hexdigest()
-                prior = self.db.execute("SELECT digest FROM received WHERE scope=? AND guid=?", (self.scope, guid)).fetchone()
-                if prior and prior[0] == value:
-                    continue
-                self.call("inbox", xml=xml)
-                self.db.execute("INSERT OR REPLACE INTO received VALUES (?,?,?)", (self.scope, guid, value))
-                self.db.commit()
-                count += 1
+            if len(incoming) > 2000:
+                raise ValueError("More than 2000 vouchers in this day. Run a full backfill instead.")
+            count = self.push_vouchers(incoming)
             result += f" Received {count} new or changed vouchers for {receiving_day}."
         return result
+
+    def push_vouchers(self, vouchers):
+        """Send only new-or-changed vouchers to Commons, batched up to 200 per request
+        instead of one HTTP round trip per voucher -- this is what makes a company with
+        a large history sync in minutes instead of hours. A single oversized voucher is
+        skipped (and reported via self.skipped) rather than stopping the whole batch --
+        one unusually large voucher should never block hundreds of ordinary ones."""
+        to_send = []
+        for voucher in vouchers:
+            guid = identity(voucher)
+            if not guid:
+                raise ValueError("Incoming voucher has no stable GUID. Receive stopped for review.")
+            xml = ET.tostring(voucher, encoding="unicode")
+            if len(xml.encode("utf-8")) > 64000:
+                self.skipped.append((guid, "Exceeds 64 KB. Use manual XML import for this voucher."))
+                continue
+            value = hashlib.sha256(xml.encode()).hexdigest()
+            prior = self.db.execute("SELECT digest FROM received WHERE scope=? AND guid=?", (self.scope, guid)).fetchone()
+            if not prior or prior[0] != value:
+                to_send.append((guid, value, xml))
+        count = 0
+        for start in range(0, len(to_send), 100):
+            chunk = to_send[start:start + 100]
+            self.call("inbox_batch", items=[item[2] for item in chunk])
+            for guid, value, _ in chunk:
+                self.db.execute("INSERT OR REPLACE INTO received VALUES (?,?,?)", (self.scope, guid, value))
+            self.db.commit()
+            count += len(chunk)
+        return count
+
+    def backfill(self, since=None, until=None, progress=None):
+        """One-time catch-up of the company's entire Tally history (or a given range),
+        pulled in month-sized chunks (falling back automatically to smaller ones only
+        when a chunk is too large) and pushed to Commons in batches. Call once when a
+        company is first paired instead of waiting for the day-by-day loop to reach
+        every historical date one at a time."""
+        since = since or self.transport.books_from(self.company) or dt.date.today()
+        until = until or dt.date.today()
+        total = 0
+        current = dt.date(since.year, since.month, 1)
+        while current <= until:
+            next_month = dt.date(current.year + (current.month == 12), current.month % 12 + 1, 1)
+            month_end = min(next_month - dt.timedelta(days=1), until)
+            vouchers = self.transport.vouchers(self.company, current.isoformat(), month_end.isoformat())
+            sent = self.push_vouchers(vouchers)
+            total += sent
+            if progress:
+                progress(current, month_end, len(vouchers), sent)
+            current = next_month
+        return total
 
 def protect(data, decrypt=False):
     if os.name != "nt":
@@ -311,10 +591,37 @@ def protect(data, decrypt=False):
     finally:
         ctypes.windll.kernel32.LocalFree(target.data)
 
+STARTUP_REGISTRY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+STARTUP_VALUE_NAME = "CommonsTallyConnector"
+
+def set_start_with_windows(enabled):
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REGISTRY_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            pythonw = str(Path(sys.executable).with_name("pythonw.exe"))
+            target = pythonw if Path(pythonw).exists() else sys.executable
+            command = f'"{target}" "{Path(__file__).resolve()}" --minimized'
+            winreg.SetValueEx(key, STARTUP_VALUE_NAME, 0, winreg.REG_SZ, command)
+        else:
+            try:
+                winreg.DeleteValue(key, STARTUP_VALUE_NAME)
+            except FileNotFoundError:
+                pass
+
+def starts_with_windows():
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REGISTRY_KEY, 0, winreg.KEY_READ) as key:
+            winreg.QueryValueEx(key, STARTUP_VALUE_NAME)
+            return True
+    except FileNotFoundError:
+        return False
+
 def main():
     import tkinter as tk
     from tkinter import ttk, messagebox
     import msvcrt
+    minimized_start = "--minimized" in sys.argv
     folder = Path(os.environ["LOCALAPPDATA"]) / "CommonsTallyConnector"
     folder.mkdir(parents=True, exist_ok=True)
     lock = open(folder / "running.lock", "a+b")
@@ -353,6 +660,15 @@ def main():
     events = queue.Queue()
     stop = threading.Event()
     thread = None
+    backfill_thread = None
+    date_auto_filled = {"value": True}
+    def fetch_books_from(name):
+        try:
+            books_from = Transport("", port.get()).books_from(name)
+            if books_from and date_auto_filled["value"]:
+                events.put(("books_from", books_from.isoformat()))
+        except Exception:
+            pass  # Best-effort convenience only; the date field still works if typed by hand.
     def discover():
         selected_port=port.get()
         def task():
@@ -361,13 +677,32 @@ def main():
                 if not rows or any(not name or not guid for name,guid in rows) or len({name for name,guid in rows})!=len(rows):
                     raise ValueError("Open your company in TallyPrime and enable its HTTP service, then try again.")
                 events.put(("companies", rows))
+                threading.Thread(target=fetch_books_from,args=(rows[0][0],),daemon=True).start()
             except Exception as error:
                 events.put(("status", str(error)))
         threading.Thread(target=task,daemon=True).start()
     ttk.Button(frame, text="Find Tally companies", command=discover).pack(anchor="w", pady=10)
-    ttk.Label(frame, text="Receive vouchers from (YYYY-MM-DD)").pack(anchor="w")
-    ttk.Entry(frame, textvariable=start).pack(fill="x", pady=4)
+    def on_company_selected(_event=None):
+        date_auto_filled["value"] = True
+        name = company.get()
+        if name:
+            threading.Thread(target=fetch_books_from,args=(name,),daemon=True).start()
+    selector.bind("<<ComboboxSelected>>", on_company_selected)
+    ttk.Label(frame, text="Receive vouchers from (YYYY-MM-DD) — auto-filled from Tally's own books-start date").pack(anchor="w")
+    date_entry = ttk.Entry(frame, textvariable=start)
+    date_entry.pack(fill="x", pady=4)
+    def on_date_typed(_event=None):
+        date_auto_filled["value"] = False
+    date_entry.bind("<Key>", on_date_typed)
     ttk.Checkbutton(frame, text="Receive Tally vouchers into Commons for review", variable=receiving).pack(anchor="w", pady=8)
+    start_with_windows = tk.BooleanVar(value=starts_with_windows())
+    def on_start_with_windows_toggled():
+        try:
+            set_start_with_windows(start_with_windows.get())
+        except Exception as error:
+            messagebox.showerror("Start with Windows", str(error))
+            start_with_windows.set(not start_with_windows.get())
+    ttk.Checkbutton(frame, text="Start automatically with Windows, minimized", variable=start_with_windows, command=on_start_with_windows_toggled).pack(anchor="w", pady=4)
     status = tk.StringVar(value="Find your company, paste the connection key, then connect.")
     ttk.Label(frame, textvariable=status, wraplength=680).pack(anchor="w", pady=12)
     def connect():
@@ -406,15 +741,48 @@ def main():
         thread=threading.Thread(target=run,daemon=True)
         thread.start()
         status.set("Connecting… Approved transfers are checked every 30 seconds.")
+    def run_backfill():
+        nonlocal backfill_thread
+        if backfill_thread and backfill_thread.is_alive():
+            return
+        try:
+            name = company.get()
+            guid = companies.get(name)
+            if not guid or not re.fullmatch(r"[a-f0-9]{64}", token.get().strip()):
+                raise ValueError("Select a discovered company and paste a valid connection key.")
+        except Exception as error:
+            messagebox.showerror("Full sync",str(error))
+            return
+        token_value,port_value=token.get().strip(),int(port.get())
+        def task():
+            events.put(("status","Full sync started — pulling the company's entire Tally history. This can take a while for a large company; the daily sync above keeps working meanwhile."))
+            try:
+                backfill_connector=Connector(Transport(token_value,port_value),name,guid,folder / (hashlib.sha256((name+guid).encode()).hexdigest()[:24]+".sqlite"))
+                def progress(month_start,month_end,found,sent):
+                    events.put(("status",f"Full sync: {month_start.isoformat()}..{month_end.isoformat()} — {found} vouchers found, {sent} sent to Commons."))
+                total=backfill_connector.backfill(progress=progress)
+                skipped=len(backfill_connector.skipped)
+                backfill_connector.db.close()
+                note=f" {skipped} oversized voucher(s) were skipped and need manual XML import." if skipped else ""
+                events.put(("status",f"Full sync complete. {total} vouchers sent to Commons across the company's entire history.{note}"))
+            except Exception as error:
+                events.put(("status","Full sync stopped: "+str(error)))
+        backfill_thread=threading.Thread(target=task,daemon=True)
+        backfill_thread.start()
     buttons=ttk.Frame(frame)
     buttons.pack(fill="x",pady=10)
     ttk.Button(buttons,text="Connect & start",command=connect).pack(side="left")
     ttk.Button(buttons,text="Pause",command=lambda:(stop.set(),status.set("Pausing after the current request finishes…"))).pack(side="left",padx=10)
+    ttk.Button(buttons,text="Full sync now",command=run_backfill).pack(side="left",padx=10)
+    ttk.Label(frame,text="\"Full sync now\" pulls this company's complete Tally history once (masters and every voucher back to books-start) — useful the first time a company is connected. The regular 30-second sync above only needs the last few days.",wraplength=690).pack(anchor="w",pady=4)
     ttk.Label(frame,text="Outgoing: approved accounting vouchers. Incoming: supported bills, purchases, receipts and stock details after review in Commons. Government filing and physical deletions are not automatic.",wraplength=690).pack(anchor="w",pady=8)
+    loaded_settings=False
     try:
         settings=json.loads(protect((folder/"connection.dpapi").read_bytes(),True))
         token.set(settings["token"]);port.set(str(settings["port"]));start.set(settings["from"]);company.set(settings["company"])
         receiving.set(settings.get("receive",True))
+        if settings.get("guid"):companies[settings["company"]]=settings["guid"];selector["values"]=list(companies)
+        loaded_settings=True
     except FileNotFoundError:
         pass
     except Exception:
@@ -426,8 +794,13 @@ def main():
                 companies.clear();companies.update(value);selector["values"]=list(companies)
                 if company.get() not in companies:company.set(next(iter(companies)))
                 status.set("Companies found. Select the exact company paired in Commons.")
+            elif kind=="books_from":
+                start.set(value)
             else:status.set(value)
         window.after(300,update)
+    if minimized_start and loaded_settings:
+        connect()
+        window.iconify()
     def close():
         stop.set()
         if thread and thread.is_alive():
@@ -453,7 +826,6 @@ def self_test():
     parse_xml(collection_xml("Company"))
 
 if __name__ == "__main__":
-    import sys
     if "--self-test" in sys.argv:
         self_test()
     else:

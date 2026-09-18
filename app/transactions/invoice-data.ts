@@ -8,6 +8,11 @@ export type InvoiceView = {
   customerAddress: string | null;
   placeOfSupply: string | null;
   supplyType: string;
+  sellerLegalName?: string | null;
+  sellerTradeName?: string | null;
+  sellerGstin?: string | null;
+  sellerPan?: string | null;
+  sellerAddress?: string | null;
   subtotalPaise: number;
   discountPaise: number;
   cgstPaise: number;

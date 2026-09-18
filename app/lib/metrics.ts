@@ -1,5 +1,10 @@
 import { getRawDb } from "../../db";
 
+function fiscalStart(today: string) {
+  const year = Number(today.slice(0, 4)), month = Number(today.slice(5, 7));
+  return `${month >= 4 ? year : year - 1}-04-01`;
+}
+
 export type BusinessMetrics = {
   customers: number;
   products: number;
@@ -18,6 +23,8 @@ export async function getBusinessMetrics(
   ownerUserId: string,
 ): Promise<BusinessMetrics> {
   const db = getRawDb();
+  const today = new Date().toISOString().slice(0, 10);
+  const from = fiscalStart(today);
   const results = await db.batch([
     db
       .prepare(
@@ -57,6 +64,13 @@ export async function getBusinessMetrics(
         "SELECT COUNT(*) AS value FROM bank_transactions WHERE owner_user_id = ? AND status = 'review'",
       )
       .bind(ownerUserId),
+    // Books-truth revenue for the current fiscal year to date, so this figure always
+    // agrees with /accounts/reports instead of being a separate raw invoice sum.
+    db
+      .prepare(
+        "SELECT COALESCE(SUM(jl.credit_paise - jl.debit_paise), 0) AS revenue FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id AND je.owner_user_id = jl.owner_user_id LEFT JOIN ledger_accounts la ON la.owner_user_id = jl.owner_user_id AND la.code = jl.account_code WHERE jl.owner_user_id = ? AND je.status = 'posted' AND je.source_type != 'year_end_close' AND je.entry_date BETWEEN ? AND ? AND COALESCE(la.category, CASE WHEN jl.account_code IN ('4000','4010','4090') THEN 'income' END) = 'income'",
+      )
+      .bind(ownerUserId, from, today),
   ]);
   const row = (index: number) =>
     (results[index].results?.[0] || {}) as Record<string, number>;
@@ -65,7 +79,7 @@ export async function getBusinessMetrics(
     products: Number(row(1).value || 0),
     employees: Number(row(2).value || 0),
     invoices: Number(row(3).value || 0),
-    revenuePaise: Number(row(3).revenue || 0),
+    revenuePaise: Number(row(8).revenue || 0),
     lowStock: Number(row(4).value || 0),
     overdueReceivables: Number(row(5).value || 0),
     overduePaise: Number(row(5).overdue || 0),

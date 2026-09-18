@@ -71,7 +71,7 @@ export async function POST(request: Request) {
       );
     const journal = await prepareJournal({ ownerUserId: user.id, actor: user.email, entryDate: data.advanceDate, sourceType: "advance", sourceId: id, description: `${data.advanceType.replaceAll("_", " ")} · ${data.partyName}`, lines: advanceEntry(data.advanceType, amountPaise, data.paymentMode === "cash") });
     const application = appliedPaise > 0 && data.advanceType !== "employee_paid"
-      ? await prepareJournal({ ownerUserId: user.id, actor: user.email, entryDate: data.advanceDate, sourceType: "advance_application", sourceId: `${id}:opening`, description: `Advance applied · ${data.partyName}`, lines: advanceApplicationEntry(data.advanceType, appliedPaise) })
+      ? await prepareJournal({ ownerUserId: user.id, actor: user.email, entryDate: data.advanceDate, sourceType: "advance_application", sourceId: `${id}:opening`, description: `Advance applied · ${data.partyName}`, lines: advanceApplicationEntry(data.advanceType, appliedPaise).map((line) => (line.accountCode === "1100" || line.accountCode === "2000") ? { ...line, partyType: data.advanceType === "customer_received" ? "customer" as const : "supplier" as const, partyId: blank(data.partyId), partyName: data.partyName } : line) })
       : null;
     await raw.batch([save, ...journal.statements, ...(application?.statements || [])]);
     return NextResponse.json({ message: "Advance recorded and posted to the books." }, { status: 201 });
@@ -97,7 +97,7 @@ export async function PATCH(request: Request) {
   const amountPaise = Math.round(parsed.data.amount * 100);
   try {
     const raw = getRawDb();
-    const advance = await raw.prepare("SELECT id,advance_type,party_name,amount_paise,applied_paise FROM payment_advances WHERE id = ? AND owner_user_id = ?").bind(parsed.data.id, user.id).first<{ id:string; advance_type:"customer_received"|"supplier_paid"|"employee_paid"; party_name:string; amount_paise:number; applied_paise:number }>();
+    const advance = await raw.prepare("SELECT id,advance_type,party_id,party_name,amount_paise,applied_paise FROM payment_advances WHERE id = ? AND owner_user_id = ?").bind(parsed.data.id, user.id).first<{ id:string; advance_type:"customer_received"|"supplier_paid"|"employee_paid"; party_id:string|null; party_name:string; amount_paise:number; applied_paise:number }>();
     if (!advance) return NextResponse.json({ message: "Advance not found." }, { status: 404 });
     if (advance.advance_type === "employee_paid") return NextResponse.json({ message: "Recover employee advances through payroll." }, { status: 400 });
     if (advance.applied_paise + amountPaise > advance.amount_paise) return NextResponse.json({ message: "The applied amount exceeds the available advance balance." }, { status: 400 });
@@ -114,7 +114,7 @@ export async function PATCH(request: Request) {
         user.id,
         amountPaise,
       );
-    const journal = await prepareJournal({ ownerUserId: user.id, actor: user.email, entryDate: applicationDate, sourceType: "advance_application", sourceId: `${advance.id}:${advance.applied_paise + amountPaise}`, description: `Advance applied · ${advance.party_name}`, lines: advanceApplicationEntry(advance.advance_type, amountPaise) });
+    const journal = await prepareJournal({ ownerUserId: user.id, actor: user.email, entryDate: applicationDate, sourceType: "advance_application", sourceId: `${advance.id}:${advance.applied_paise + amountPaise}`, description: `Advance applied · ${advance.party_name}`, lines: advanceApplicationEntry(advance.advance_type, amountPaise).map((line) => (line.accountCode === "1100" || line.accountCode === "2000") ? { ...line, partyType: advance.advance_type === "customer_received" ? "customer" as const : "supplier" as const, partyId: advance.party_id, partyName: advance.party_name } : line) });
     await raw.batch([update, ...journal.statements]);
     return NextResponse.json({ message: "Advance applied and balances updated." });
   } catch (error) {

@@ -44,7 +44,9 @@ export default async function ExistingCustomersPage() {
     unavailable = true;
   }
 
-  const directory = savedCustomers;
+  const RENDER_CAP = 300;
+  const total = savedCustomers.length;
+  const directory = savedCustomers.slice(0, RENDER_CAP);
 
   return (
     <main className="form-shell">
@@ -69,11 +71,16 @@ export default async function ExistingCustomersPage() {
         </a>
         <div className="directory-heading">
           <h1 id="customer-directory-title">Customers</h1>
-          <span>{directory.length.toString().padStart(2, "0")}</span>
+          <span>{total.toString().padStart(2, "0")}</span>
         </div>
         {unavailable && (
           <p className="directory-notice">
             Saved customers are temporarily unavailable.
+          </p>
+        )}
+        {total > RENDER_CAP && (
+          <p className="directory-notice">
+            Showing the first {RENDER_CAP} of {total} customers. Use search to find a specific one.
           </p>
         )}
         <ListToolbar filters={[{label:"GST customers",value:"GST customer"},{label:"Non-GST customers",value:"Non-GST"}]}/>

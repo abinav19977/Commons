@@ -1,5 +1,8 @@
-import { headers } from "next/headers";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { getRawDb } from "../db";
+import { SESSION_COOKIE } from "./session";
+import { digest } from "./lib/tally-bridge";
 
 export type ChatGPTUser = {
   id: string;
@@ -8,34 +11,26 @@ export type ChatGPTUser = {
   fullName: string | null;
 };
 
-const USER_EMAIL_HEADER = "oai-authenticated-user-email";
-const USER_ID_HEADER = "oai-authenticated-user-id";
-const USER_FULL_NAME_HEADER = "oai-authenticated-user-full-name";
-const USER_FULL_NAME_ENCODING_HEADER =
-  "oai-authenticated-user-full-name-encoding";
-const PERCENT_ENCODED_UTF8 = "percent-encoded-utf-8";
-const SIGN_IN_PATH = "/signin-with-chatgpt";
-const SIGN_OUT_PATH = "/signout-with-chatgpt";
-const CALLBACK_PATH = "/callback";
+const SIGN_IN_PATH = "/login";
+const SIGN_OUT_PATH = "/logout";
+const SIGN_UP_PATH = "/signup";
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get(USER_EMAIL_HEADER);
-  const id = requestHeaders.get(USER_ID_HEADER);
-  if (!email || !id) return null;
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return null;
 
-  const encodedFullName = requestHeaders.get(USER_FULL_NAME_HEADER);
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get(USER_FULL_NAME_ENCODING_HEADER) === PERCENT_ENCODED_UTF8
-      ? safeDecodeURIComponent(encodedFullName)
-      : null;
+  const row = await getRawDb().prepare(
+    `SELECT a.id, a.email, a.full_name AS fullName FROM account_sessions s
+     JOIN accounts a ON a.id = s.account_id
+     WHERE s.token_hash = ? AND s.expires_at > ?`,
+  ).bind(await digest(token), Date.now()).first<{ id: string; email: string; fullName: string | null }>();
+  if (!row) return null;
 
   return {
-    id,
-    displayName: fullName ?? email,
-    email,
-    fullName,
+    id: row.id,
+    displayName: row.fullName ?? row.email,
+    email: row.email,
+    fullName: row.fullName,
   };
 }
 
@@ -77,14 +72,6 @@ function isReservedAuthPath(pathname: string): boolean {
   return (
     pathname === SIGN_IN_PATH ||
     pathname === SIGN_OUT_PATH ||
-    pathname === CALLBACK_PATH
+    pathname === SIGN_UP_PATH
   );
-}
-
-function safeDecodeURIComponent(value: string): string | null {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return null;
-  }
 }
