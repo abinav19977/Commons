@@ -71,12 +71,20 @@ export type TallyDocument=ReturnType<typeof documentFromNode>;
 export function documentFromNode(node:XmlNode){
  const guid=value(node,"GUID");if(!guid)throw Error("A stable Tally GUID is required for connected imports.");
  const date=tallyDate(value(node,"DATE"));if(!date)throw Error("Invalid voucher date.");
- const ledgers=accountingLedgerNodes(node).map(n=>({
+ // Vouchers with no accounting effect (pure stock journals, godown transfers) still emit
+ // one empty placeholder <ALLLEDGERENTRIES.LIST> tag with no children at all; treat it the
+ // same as the already-filtered empty inventory placeholder below, not a missing amount.
+ const ledgers=accountingLedgerNodes(node).filter(n=>n.children.length>0).map(n=>({
   name:value(n,"LEDGERNAME"),amount:scaled(value(n,"AMOUNT")),party:value(n,"ISPARTYLEDGER").toLowerCase()==="yes",
   bills:children(n,"BILLALLOCATIONS.LIST").filter(b=>b.children.length>0||b.text.trim()||Object.keys(b.attrs).length>0).map(b=>({reference:value(b,"NAME"),type:value(b,"BILLTYPE"),amount:scaled(value(b,"AMOUNT")),dueDate:tallyDate(value(b,"BILLCREDITPERIOD"))})),
  }));
  const items=inventoryEntryNodes(node).filter(n=>n.children.length>0).map(n=>({
-  name:value(n,"STOCKITEMNAME"),...quantity(value(n,"ACTUALQTY")||value(n,"BILLEDQTY")),amount:scaled(value(n,"AMOUNT")),hsn:value(n,"GSTHSNNAME")||value(n,"HSNCODE"),rates:descendants(n,"RATEDETAILS.LIST").map(r=>({head:value(r,"GSTRATEDUTYHEAD"),basisPoints:scaled(value(r,"GSTRATE")||"0")})),
+  // A stock-journal item transferred at no costed rate/value (confirmed real pattern on
+  // godown-transfer vouchers) leaves AMOUNT present but blank rather than "0" — treat it
+  // as zero rather than crashing; these voucher types are flagged for review before
+  // posting regardless, so a real sale/purchase with a genuinely missing amount still
+  // surfaces as a reconciliation issue instead of silently vanishing.
+  name:value(n,"STOCKITEMNAME"),...quantity(value(n,"ACTUALQTY")||value(n,"BILLEDQTY")),amount:scaled(value(n,"AMOUNT")||"0"),hsn:value(n,"GSTHSNNAME")||value(n,"HSNCODE"),rates:descendants(n,"RATEDETAILS.LIST").map(r=>({head:value(r,"GSTRATEDUTYHEAD"),basisPoints:scaled(value(r,"GSTRATE")||"0")})),
   batches:children(n,"BATCHALLOCATIONS.LIST").map(b=>({name:value(b,"BATCHNAME")||"Primary Batch",warehouse:value(b,"GODOWNNAME")||"Main Location",...quantity(value(b,"ACTUALQTY")||value(b,"BILLEDQTY")),manufactured:tallyDate(value(b,"MFDON")),expiry:tallyDate(value(b,"EXPIRYPERIOD"))})),
  }));
  return {guid,date,revision:value(node,"ALTERID"),type:value(node,"VOUCHERTYPENAME"),number:value(node,"VOUCHERNUMBER"),partyName:value(node,"PARTYLEDGERNAME"),gstin:value(node,"PARTYGSTIN"),placeOfSupply:value(node,"PLACEOFSUPPLY"),address:descendants(node,"ADDRESS").map(n=>n.text).join(", "),cancelled:value(node,"ISCANCELLED").toLowerCase()==="yes",optional:value(node,"ISOPTIONAL").toLowerCase()==="yes",narration:value(node,"NARRATION"),ledgers,items,

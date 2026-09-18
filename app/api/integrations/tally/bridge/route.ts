@@ -4,7 +4,13 @@ import { getRawDb } from "../../../../../db";
 import { digest,voucherBlocks,xmlTag, type Bridge,readBoundedJson } from "../../../../lib/tally-bridge";
 import { parseXml,descendants,accountingLedgerNodes,value,scaled } from "../../../../lib/tally-document";
 import { tallyEnvelope } from "../../../../lib/tally";
+import { prepareConnectedImport } from "../../../../lib/tally-connected-import";
 import { GET as exportXml } from "../export/route";
+// The connector can deliver hundreds of historical vouchers into the queue in minutes
+// (see inbox_batch), but each one otherwise needs a manual "Review voucher" click here.
+// This commits everything in the queue that's already clean, in modest batches so a
+// single request stays inside the Worker's CPU/subrequest budget.
+const IMPORT_QUEUE_BATCH = 25;
 const reply=(message:string,status=400)=>NextResponse.json({message},{status});
 export async function GET(request:Request){
  const user=await getChatGPTUser(request);if(!user)return reply("Select your company and sign in again.",401);
@@ -15,7 +21,8 @@ export async function GET(request:Request){
  if(id){const item=await raw.prepare("SELECT xml FROM tally_transfers WHERE id=? AND owner_user_id=? AND direction='in'").bind(id,user.id).first<{xml:string}>();return item?NextResponse.json(item):reply("Transfer not found.",404);}
  const transfers=await raw.prepare("SELECT id,direction,label,status,message,updated_at FROM tally_transfers WHERE owner_user_id=? ORDER BY updated_at DESC LIMIT 100").bind(user.id).all();
  const documents=await raw.prepare("SELECT id,guid,kind,revision,created_at FROM tally_documents WHERE owner_user_id=? ORDER BY created_at DESC LIMIT 50").bind(user.id).all();
- return NextResponse.json({bridge,transfers:transfers.results,documents:documents.results});
+ const queued=await raw.prepare("SELECT COUNT(*) c FROM tally_transfers WHERE owner_user_id=? AND direction='in' AND status='review'").bind(user.id).first<{c:number}>();
+ return NextResponse.json({bridge,transfers:transfers.results,documents:documents.results,queued:queued?.c||0});
 }
 export async function POST(request:Request){
  const user=await getChatGPTUser(request);if(!user)return reply("Your company selection changed. Reload this page.",401);
@@ -35,6 +42,26 @@ export async function POST(request:Request){
  }
  if(body.action==="retry"){
   await raw.prepare("UPDATE tally_transfers SET status='pending',message=NULL,updated_at=? WHERE id=? AND owner_user_id=? AND direction='out' AND status='blocked'").bind(Date.now(),String(body.transfer||""),user.id).run();return reply("Blocked transfer queued for another attempt.",200);
+ }
+ if(body.action==="import_queue"){
+  if(body.confirmation!=="IMPORT TALLY")return reply("Confirm the import first.");
+  const pending=await raw.prepare("SELECT id,xml FROM tally_transfers WHERE owner_user_id=? AND direction='in' AND status='review' ORDER BY created_at LIMIT ?").bind(user.id,IMPORT_QUEUE_BATCH).all<{id:string;xml:string}>();
+  const statements=[];let imported=0,duplicates=0,needsMapping=0;const problems:string[]=[];
+  for(const transfer of pending.results){
+   try{
+    const result=await prepareConnectedImport(user.id,user.email,transfer.xml,{});
+    if(result.duplicate){duplicates++;statements.push(raw.prepare("UPDATE tally_transfers SET status='imported',updated_at=? WHERE id=? AND owner_user_id=?").bind(Date.now(),transfer.id,user.id));}
+    else if(result.issues.length){needsMapping++;const issue=result.issues[0];problems.push(`${result.doc.type} ${result.doc.number||result.doc.guid}: ${issue}`);
+     // Move it out of 'review' so the next batch call skips it instead of reselecting the
+     // same stuck voucher forever; "Review voucher" still opens it via its transfer id.
+     statements.push(raw.prepare("UPDATE tally_transfers SET status='needs_mapping',message=?,updated_at=? WHERE id=? AND owner_user_id=?").bind(issue.slice(0,300),Date.now(),transfer.id,user.id));}
+    else{statements.push(...result.statements);imported++;}
+   }catch(error){needsMapping++;const issue=error instanceof Error?error.message:"A queued voucher could not be processed.";problems.push(issue);
+    statements.push(raw.prepare("UPDATE tally_transfers SET status='needs_mapping',message=?,updated_at=? WHERE id=? AND owner_user_id=?").bind(issue.slice(0,300),Date.now(),transfer.id,user.id));}
+  }
+  if(statements.length)await raw.batch(statements);
+  const remaining=await raw.prepare("SELECT COUNT(*) c FROM tally_transfers WHERE owner_user_id=? AND direction='in' AND status='review'").bind(user.id).first<{c:number}>();
+  return NextResponse.json({imported,duplicates,needsMapping,remaining:remaining?.c||0,problems:problems.slice(0,5),message:`${imported} voucher${imported===1?"":"s"} imported, ${duplicates} already up to date, ${needsMapping} need review. ${remaining?.c||0} left in the queue.`});
  }
  if(typeof body.action!=="string"||!["preview","queue"].includes(body.action))return reply("Unknown action.");
  if(bridge.revoked||bridge.expires_at<=Date.now()||!bridge.tally_guid)return reply("Connect the Windows app and verify your Tally company first.",409);

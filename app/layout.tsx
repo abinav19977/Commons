@@ -17,7 +17,9 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const company = await getChatGPTUser();
+  // A DB hiccup here (quota, transient outage) must not take the entire site down —
+  // every page renders through this layout, logged-in or not.
+  const company = await getChatGPTUser().catch(() => null);
   return (
     <html lang="en">
       <head><meta name="commons-company" content={company?.id || ""}/></head>
