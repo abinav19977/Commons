@@ -1,5 +1,6 @@
 "use client";
 import { companyFetch } from "@/app/company-fetch";
+import { todayIST } from "@/app/lib/date";
 
 import { FormEvent, useMemo, useState } from "react";
 import { Save } from "lucide-react";
@@ -24,7 +25,7 @@ const money = (paise: number) =>
     maximumFractionDigits: 0,
   }).format(paise / 100);
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = todayIST;
 
 export default function AdvanceWorkspace({
   initialAdvances,

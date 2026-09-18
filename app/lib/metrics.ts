@@ -1,4 +1,5 @@
 import { getRawDb } from "../../db";
+import { todayIST } from "./date";
 
 function fiscalStart(today: string) {
   const year = Number(today.slice(0, 4)), month = Number(today.slice(5, 7));
@@ -23,7 +24,7 @@ export async function getBusinessMetrics(
   ownerUserId: string,
 ): Promise<BusinessMetrics> {
   const db = getRawDb();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIST();
   const from = fiscalStart(today);
   const results = await db.batch([
     db

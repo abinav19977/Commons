@@ -4,6 +4,7 @@ import { getRawDb } from "../../../db";
 import { getChatGPTUser } from "../../company-auth";
 import { advanceApplicationEntry, advanceEntry } from "../../lib/accounting";
 import { assertPeriodOpen, prepareJournal } from "../../lib/book-server";
+import { todayIST } from "../../lib/date";
 
 const schema = z.object({
   advanceType: z.enum(["customer_received", "supplier_paid", "employee_paid"]),
@@ -101,7 +102,7 @@ export async function PATCH(request: Request) {
     if (!advance) return NextResponse.json({ message: "Advance not found." }, { status: 404 });
     if (advance.advance_type === "employee_paid") return NextResponse.json({ message: "Recover employee advances through payroll." }, { status: 400 });
     if (advance.applied_paise + amountPaise > advance.amount_paise) return NextResponse.json({ message: "The applied amount exceeds the available advance balance." }, { status: 400 });
-    const applicationDate = new Date().toISOString().slice(0, 10);
+    const applicationDate = todayIST();
     await assertPeriodOpen(user.id, applicationDate);
     const update = raw.prepare(
         "UPDATE payment_advances SET applied_paise = applied_paise + ?,status = CASE WHEN applied_paise + ? = amount_paise THEN 'applied' ELSE 'active' END,updated_at = ? WHERE id = ? AND owner_user_id = ? AND applied_paise + ? <= amount_paise",

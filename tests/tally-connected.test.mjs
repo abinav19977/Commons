@@ -125,6 +125,12 @@ test("a cash sale (party IS the Cash ledger, which auto-maps to its own code) is
  assert.deepEqual(Array.from(result.issues),[]);
  await s.raw.batch(result.statements);
  assert.equal(s.db.prepare("SELECT SUM(debit_paise-credit_paise) n FROM journal_lines").get().n,0);
+ // A cash sale settles instantly -- it must never sit in the invoice table as an
+ // outstanding receivable against a "customer" literally named Cash, which would
+ // otherwise surface it in the overdue-reminder queue.
+ const posted=s.db.prepare("SELECT status,paid_paise,total_paise FROM invoices WHERE owner_user_id='company-one'").get();
+ assert.equal(posted.status,"paid");
+ assert.equal(posted.paid_paise,posted.total_paise);
 });
 
 test("a purchase with a Round Off line (party credited, opposite direction from a sale) reconciles correctly",async()=>{

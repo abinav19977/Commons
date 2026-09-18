@@ -4,6 +4,7 @@ import { getRawDb } from "../../../../db";
 import { getChatGPTUser } from "../../../company-auth";
 import { purchaseGstCorrectionEntry } from "../../../lib/accounting";
 import { assertPeriodOpen, prepareJournal } from "../../../lib/book-server";
+import { todayIST } from "../../../lib/date";
 
 const schema = z.object({
   purchaseId: z.string().trim().min(1).max(100),
@@ -32,7 +33,7 @@ export async function POST(request: Request) {
   const fromReverseCharge = Boolean(purchase.reverse_charge);
   if (fromItcEligible === itcEligible && fromReverseCharge === reverseCharge)
     return NextResponse.json({ message: "This purchase already has that GST treatment. Nothing to correct." }, { status: 400 });
-  const correctionDate = new Date().toISOString().slice(0, 10);
+  const correctionDate = todayIST();
   try {
     await assertPeriodOpen(user.id, correctionDate);
     const lines = purchaseGstCorrectionEntry(purchase.subtotal_paise, purchase.gst_paise, true, fromItcEligible, fromReverseCharge, itcEligible, reverseCharge)

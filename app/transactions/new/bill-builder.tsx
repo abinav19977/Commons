@@ -1,5 +1,6 @@
 "use client";
 import { companyFetch } from "@/app/company-fetch";
+import { todayIST } from "@/app/lib/date";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 
@@ -62,7 +63,7 @@ export default function BillBuilder() {
   const [discount, setDiscount] = useState("0");
   const [status, setStatus] = useState<"idle" | "saving" | "error">("idle");
   const [message, setMessage] = useState("");
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIST();
   const due = useMemo(() => {
     const d = new Date();
     d.setDate(d.getDate() + 30);

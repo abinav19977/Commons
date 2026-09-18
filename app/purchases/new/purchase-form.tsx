@@ -1,5 +1,6 @@
 "use client";
 import { companyFetch } from "@/app/company-fetch";
+import { todayIST } from "@/app/lib/date";
 import { FormEvent, useMemo, useState } from "react";
 import { Check, Copy, Plus, Trash2 } from "lucide-react";
 type Product = {
@@ -150,7 +151,7 @@ export default function PurchaseForm({
             <input
               name="purchaseDate"
               type="date"
-              defaultValue={new Date().toISOString().slice(0, 10)}
+              defaultValue={todayIST()}
               required
             />
           </label>

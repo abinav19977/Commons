@@ -1,5 +1,6 @@
 "use client";
 import { companyFetch } from "@/app/company-fetch";
+import { todayIST } from "@/app/lib/date";
 
 import { FormEvent, useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
@@ -47,7 +48,7 @@ export default function RestockForm({
       Math.max(0, Number(quantity) || 0) * Math.max(0, Number(unitCost) || 0),
     [quantity, unitCost],
   );
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIST();
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

@@ -1,5 +1,6 @@
 "use client";
 import { companyFetch } from "@/app/company-fetch";
+import { todayIST } from "@/app/lib/date";
 import { FormEvent, useMemo, useState } from "react";
 
 type Purchase={id:string;purchase_number:string;supplier_name:string;total_paise:number;tds_paise:number;paid_paise:number;purchase_date:string;msme_category:string;payment_terms_days:number};
@@ -28,7 +29,7 @@ export default function PayablePaymentForm({purchases}:{purchases:Purchase[]}){
     </div>}
     <form className="plain-book-form" onSubmit={submit}><div className="form-grid">
     <label className="span-2"><span>Supplier bill</span><select value={selected} onChange={event=>setSelected(event.target.value)}>{purchases.map(item=>{const overdue=msmeDaysOverdue(item);return <option value={item.id} key={item.id}>{item.purchase_number} · {item.supplier_name} · due {money(netDue(item))}{item.tds_paise?` (net of ${money(item.tds_paise)} TDS)`:""}{overdue!==null&&overdue>0?` · MSME ${overdue}d overdue`:""}</option>;})}</select></label>
-    <label><span>Payment date</span><input type="date" name="paymentDate" defaultValue={new Date().toISOString().slice(0,10)} required/></label>
+    <label><span>Payment date</span><input type="date" name="paymentDate" defaultValue={todayIST()} required/></label>
     <label><span>Amount</span><div className="money-input"><b>₹</b><input name="amount" inputMode="decimal" defaultValue={purchase?(netDue(purchase)/100).toFixed(2):""} required/></div></label>
     <label><span>Payment mode</span><select name="paymentMode" defaultValue="bank_transfer"><option value="bank_transfer">Bank transfer</option><option value="upi">UPI</option><option value="cash">Cash</option><option value="cheque">Cheque</option><option value="other">Other</option></select></label>
     <label><span>Reference</span><input name="reference" placeholder="UTR, cheque or receipt number"/></label>

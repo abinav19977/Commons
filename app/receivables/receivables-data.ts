@@ -1,4 +1,5 @@
 import { getRawDb } from "../../db";
+import { daysAgoIST, todayIST } from "../lib/date";
 
 export const defaultReminderTemplate =
   "Hello {customer}, this is a gentle reminder that {amount} is pending against {invoice_count} invoice(s). The oldest due date is {oldest_due_date}. Please share an update on payment. Thank you.";
@@ -61,10 +62,7 @@ export async function getReceivableReminders(
   settings: ReceivableSettingsView,
 ): Promise<ReceivableReminder[]> {
   if (!settings.enabled) return [];
-  const today = new Date();
-  const cutoff = new Date(today.getTime() - settings.overdueDays * 86400000)
-    .toISOString()
-    .slice(0, 10);
+  const cutoff = daysAgoIST(settings.overdueDays);
   const [invoiceRows, logRows] = await Promise.all([
     getRawDb()
       .prepare(
@@ -100,7 +98,7 @@ export async function getReceivableReminders(
       daysOverdue: Math.max(
         0,
         Math.floor(
-          (Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()) -
+          (Date.parse(`${todayIST()}T00:00:00Z`) -
             Date.parse(`${oldestDueDate}T00:00:00Z`)) /
             86400000,
         ),

@@ -2,6 +2,7 @@ import { getRawDb } from "../../../db";
 import { requireChatGPTUser } from "../../company-auth";
 import CommonsAssistant from "../../components/commons-assistant";
 import { CORE_ACCOUNTS } from "../../lib/accounting";
+import { todayIST } from "../../lib/date";
 
 export const dynamic = "force-dynamic";
 const money=(paise:number)=>new Intl.NumberFormat("en-IN",{style:"currency",currency:"INR",maximumFractionDigits:0}).format(paise/100);
@@ -12,7 +13,7 @@ type CashRow={source_type:string;inflow:number;outflow:number};
 
 export default async function BookReportsPage({searchParams}:{searchParams:Promise<{from?:string;to?:string}>}){
   const user=await requireChatGPTUser("/accounts/reports");
-  const params=await searchParams,today=new Date().toISOString().slice(0,10);
+  const params=await searchParams,today=todayIST();
   const from=validDate(params.from)||fiscalStart(today),to=validDate(params.to)||today;
   const raw=getRawDb();
   let asOf:Row[]=[],period:Row[]=[],cash:CashRow[]=[],openingCash=0,entryCount=0;

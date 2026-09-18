@@ -4,6 +4,7 @@ import { getChatGPTUser } from "../../../../company-auth";
 import { CORE_ACCOUNTS } from "../../../../lib/accounting";
 import { exportVoucher, type ExportLine, type ExportItem, type ExportSource } from "../../../../lib/tally-export";
 import { tallyEnvelope, xmlEscape } from "../../../../lib/tally";
+import { todayIST } from "../../../../lib/date";
 
 type Profile = { legal_name: string; trade_name: string | null };
 type Party = { name: string; gstin: string | null; state: string | null; opening_paise: number };
@@ -96,6 +97,6 @@ export async function GET(request: Request) {
     }}catch(error){return NextResponse.json({message:error instanceof Error?error.message:"Export could not be validated."},{status:409});}
   }
   const body = tallyEnvelope(company, messages, scope === "masters" ? "All Masters" : "Vouchers");
-  const filename = `commons-to-tally-${scope}-${new Date().toISOString().slice(0, 10)}.xml`;
+  const filename = `commons-to-tally-${scope}-${todayIST()}.xml`;
   return new NextResponse(body, { headers: { "Content-Type": "application/xml; charset=utf-8", "Content-Disposition": `attachment; filename="${filename}"`, "Cache-Control": "no-store" } });
 }

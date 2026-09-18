@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getRawDb } from "../../../../db";
 import { getChatGPTUser } from "../../../company-auth";
 import { rupeesToPaise } from "../../../lib/accounting";
+import { todayIST } from "../../../lib/date";
 
 const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("warehouse"), name: z.string().trim().min(2).max(100), code: z.string().trim().min(2).max(20), address: z.string().trim().max(300).optional().default("") }),
@@ -32,7 +33,7 @@ export async function POST(request: Request) {
       raw.prepare("INSERT INTO inventory_batches (id,owner_user_id,product_id,product_name,warehouse_id,warehouse_name,batch_number,manufactured_date,expiry_date,quantity_milli,unit,unit_cost_paise,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .bind(id, user.id, d.productId, d.productName, d.warehouseId, d.warehouseName, d.batchNumber, d.manufacturedDate || null, d.expiryDate || null, quantityMilli, d.unit, unitCost, now, now),
       raw.prepare("INSERT INTO stock_movements (id,owner_user_id,product_id,movement_type,movement_date,quantity_milli,unit,unit_cost_paise,total_value_paise,supplier,reference,notes,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(crypto.randomUUID(), user.id, d.productId, "batch_opening", new Date().toISOString().slice(0, 10), quantityMilli, d.unit, unitCost, Math.round((quantityMilli / 1000) * unitCost), null, d.batchNumber, `Batch added to ${d.warehouseName}`, now),
+        .bind(crypto.randomUUID(), user.id, d.productId, "batch_opening", todayIST(), quantityMilli, d.unit, unitCost, Math.round((quantityMilli / 1000) * unitCost), null, d.batchNumber, `Batch added to ${d.warehouseName}`, now),
     ]);
     return NextResponse.json({ id }, { status: 201 });
   } catch (error) {

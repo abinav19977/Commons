@@ -3,6 +3,7 @@ import { getRawDb } from "../../../db";
 import { chatGPTSignOutPath, requireChatGPTUser } from "../../company-auth";
 import CommonsAssistant from "../../components/commons-assistant";
 import TallyWorkspace from "./tally-workspace";
+import { todayIST } from "../../lib/date";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,7 @@ export default async function TallyIntegrationPage() {
     ]);
     counts = { customers: customers?.count || 0, suppliers: suppliers?.count || 0, products: products?.count || 0, vouchers: vouchers?.count || 0, imported: imported?.count || 0 };
   } catch (error) { console.error("Tally integration summary unavailable", error); }
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIST();
   const year = Number(today.slice(0, 4));
   const financialYearStart = `${Number(today.slice(5, 7)) < 4 ? year - 1 : year}-04-01`;
   return <main className="form-shell tally-shell">

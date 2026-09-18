@@ -1,5 +1,6 @@
 "use client";
 import { companyFetch } from "@/app/company-fetch";
+import { todayIST } from "@/app/lib/date";
 import { FormEvent, useState } from "react";
 import { ArrowDownToLine, ArrowRightLeft, ArrowUpFromLine, Check, SlidersHorizontal } from "lucide-react";
 
@@ -27,7 +28,7 @@ export default function MoneyEntryForm({ initialKind = "money_in", accounts }: {
   return <form className="plain-book-form" onSubmit={submit}>
     <div className="event-choice">{choices.map(({ id, label, detail, icon: Icon }) => <button className={kind === id ? "active" : ""} type="button" onClick={() => setKind(id)} key={id}><Icon /><strong>{label}</strong><small>{detail}</small></button>)}</div>
     <div className="form-grid">
-      <label><span>Date</span><input type="date" name="entryDate" defaultValue={new Date().toISOString().slice(0, 10)} required /></label>
+      <label><span>Date</span><input type="date" name="entryDate" defaultValue={todayIST()} required /></label>
       <label><span>Amount</span><div className="money-input"><b>₹</b><input inputMode="decimal" name="amount" placeholder="0.00" required /></div></label>
       {kind !== "transfer" && kind !== "adjustment" && <label><span>Why?</span><select name="category" defaultValue={kind === "money_in" ? "customer_payment" : "business_expense"}>{kind === "money_in" ? <><option value="customer_payment">Customer paid an invoice</option><option value="other_income">Other income</option></> : <><option value="supplier_payment">Paid a supplier</option><option value="salary">Paid salary</option><option value="business_expense">Business expense</option></>}</select></label>}
       {kind !== "transfer" && kind !== "adjustment" && <label><span>{kind === "money_in" ? "Received from" : "Paid to"}</span><input name="partyName" placeholder="Name (optional)" /></label>}

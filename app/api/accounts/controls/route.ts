@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getRawDb } from "../../../../db";
 import { getChatGPTUser } from "../../../company-auth";
 import { buildBackup } from "../../../lib/backup";
+import { todayIST } from "../../../lib/date";
 
 const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("lock"), periodStart: z.string().length(10), periodEnd: z.string().length(10), reason: z.string().trim().min(3).max(240) }),
@@ -19,7 +20,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ message: "Owner or accountant access is required for this control." }, { status: 403 });
   try {
     const backup = await buildBackup(user.id);
-    return new NextResponse(JSON.stringify({ ...backup, createdAt: new Date().toISOString(), companyId:user.id, restoreSupported:true, excluded:["account identity","connector credentials","external API credentials"] }, null, 2), { headers: { "content-type": "application/json", "content-disposition": `attachment; filename="commons-backup-${new Date().toISOString().slice(0, 10)}.json"`, "cache-control": "no-store" } });
+    return new NextResponse(JSON.stringify({ ...backup, createdAt: new Date().toISOString(), companyId:user.id, restoreSupported:true, excluded:["account identity","connector credentials","external API credentials"] }, null, 2), { headers: { "content-type": "application/json", "content-disposition": `attachment; filename="commons-backup-${todayIST()}.json"`, "cache-control": "no-store" } });
   } catch (error) {
     console.error("Backup export failed", error);
     return NextResponse.json({ message: "Backup could not be prepared." }, { status: 500 });

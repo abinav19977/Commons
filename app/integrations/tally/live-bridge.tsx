@@ -1,12 +1,13 @@
 "use client";
 import { useEffect,useState } from "react";
 import { companyFetch } from "@/app/company-fetch";
+import { todayIST } from "@/app/lib/date";
 import DocumentHistory from "./document-history";
 type Transfer={id:string;direction:string;label:string;status:string;message:string|null;updated_at:number};
 type State={bridge:null|{tally_name:string;tally_guid:string|null;last_seen:number|null;revoked:number;expires_at:number};transfers:Transfer[];documents?:{id:string;kind:string;created_at:number;revision:string}[];queued?:number};
 export default function LiveBridge({onReview}:{onReview:(xml:string,name:string)=>void}){
  const [data,setData]=useState<State>({bridge:null,transfers:[]});const [name,setName]=useState("");const [token,setToken]=useState("");const [message,setMessage]=useState("");const [busy,setBusy]=useState(false);const [now,setNow]=useState(()=>Date.now());
- const [from,setFrom]=useState(new Date().toISOString().slice(0,10));const [to,setTo]=useState(new Date().toISOString().slice(0,10));
+ const [from,setFrom]=useState(todayIST());const [to,setTo]=useState(todayIST());
  const [preview,setPreview]=useState<{key:string;label:string;date:string;amountPaise:number;digest:string}[]|null>(null);
  async function refresh(){try{const response=await companyFetch("/api/integrations/tally/bridge");const body=await response.json();if(!response.ok)throw Error(body.message);setData(body);setNow(Date.now());if(body.bridge)setName(body.bridge.tally_name);}catch(e){setMessage(e instanceof Error?e.message:"Could not load connection.");}}
  useEffect(()=>{const first=setTimeout(refresh,0);const timer=setInterval(refresh,15000);return ()=>{clearTimeout(first);clearInterval(timer);};},[]);
