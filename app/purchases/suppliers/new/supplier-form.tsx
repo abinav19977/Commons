@@ -220,11 +220,27 @@ export default function SupplierForm() {
               defaultValue="0"
             />
           </label>
+          <label>
+            <span>MSME category (Udyam)</span>
+            <select name="msmeCategory" defaultValue="none">
+              <option value="none">Not MSME registered</option>
+              <option value="micro">Micro enterprise</option>
+              <option value="small">Small enterprise</option>
+              <option value="medium">Medium enterprise</option>
+            </select>
+          </label>
+          <label>
+            <span>Udyam registration number</span>
+            <input name="udyamNumber" maxLength={20} placeholder="UDYAM-XX-00-0000000" />
+          </label>
           <label className="wide-field">
             <span>Notes</span>
             <textarea name="notes" rows={4} maxLength={1000} />
           </label>
         </div>
+        <p className="field-hint">
+          Micro and Small suppliers get 45-day payment protection under Section 43B(h) of the Income Tax Act — bills unpaid past that limit become disallowed expenses. Commons will flag these on the Payables screen.
+        </p>
         <label className="check-field section-check">
           <input name="active" type="checkbox" defaultChecked />
           <span>Supplier is active</span>

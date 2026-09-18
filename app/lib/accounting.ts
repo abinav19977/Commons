@@ -25,6 +25,7 @@ export const CORE_ACCOUNTS = [
   { code: "2210", name: "Payroll deductions payable", category: "liability", normalSide: "credit", systemKey: "payroll_deductions" },
   { code: "2300", name: "Provisions and accrued expenses", category: "liability", normalSide: "credit", systemKey: "provisions" },
   { code: "2310", name: "Income tax payable", category: "liability", normalSide: "credit", systemKey: "income_tax_payable" },
+  { code: "2320", name: "TDS payable", category: "liability", normalSide: "credit", systemKey: "tds_payable" },
   { code: "3000", name: "Owner's capital", category: "equity", normalSide: "credit", systemKey: "capital" },
   { code: "3100", name: "Opening balance equity", category: "equity", normalSide: "credit", systemKey: "opening_equity" },
   { code: "3200", name: "Retained earnings", category: "equity", normalSide: "credit", systemKey: "retained_earnings" },
@@ -125,6 +126,18 @@ export function purchaseEntry(taxablePaise: number, taxPaise: number, inventory 
     ...(taxPaise && itcEligible ? [{ accountCode: "1300", accountName: "Input GST credit", debitPaise: taxPaise, creditPaise: 0 }] : []),
     { accountCode: "2000", accountName: "Supplier money due", debitPaise: 0, creditPaise: total },
     ...(taxPaise && reverseCharge ? [{ accountCode: "2100", accountName: "GST payable", debitPaise: 0, creditPaise: taxPaise }] : []),
+  ];
+}
+
+// TDS (194C/194J/194Q etc.) is deducted from what's actually paid to a supplier, not
+// from the expense/GST itself — the supplier is credited the full invoice value, then
+// immediately debited the TDS amount, with the same amount credited to a TDS-payable
+// liability (remitted to the government, then reflected in the supplier's Form 26AS).
+export function tdsDeductionEntry(tdsPaise: number): BookLine[] {
+  if (!tdsPaise) return [];
+  return [
+    { accountCode: "2000", accountName: "Supplier money due", debitPaise: tdsPaise, creditPaise: 0 },
+    { accountCode: "2320", accountName: "TDS payable", debitPaise: 0, creditPaise: tdsPaise },
   ];
 }
 

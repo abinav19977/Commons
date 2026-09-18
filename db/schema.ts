@@ -190,6 +190,12 @@ export const suppliers = sqliteTable(
     pinCode: text("pin_code"),
     paymentTermsDays: integer("payment_terms_days").notNull().default(0),
     openingPayablePaise: integer("opening_payable_paise").notNull().default(0),
+    // Section 43B(h) of the Income Tax Act (in force from AY 2024-25): amounts owed to a
+    // Micro or Small enterprise (not Medium) are disallowed as a deduction if unpaid
+    // beyond the MSMED Act Section 15 limit (the agreed term, capped at 45 days). Tracking
+    // this per supplier is what lets Commons flag at-risk unpaid bills before year-end.
+    msmeCategory: text("msme_category").notNull().default("none"),
+    udyamNumber: text("udyam_number"),
     notes: text("notes"),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
@@ -412,6 +418,13 @@ export const purchases = sqliteTable(
     itcEligible: integer("itc_eligible", { mode: "boolean" }).notNull().default(true),
     reverseCharge: integer("reverse_charge", { mode: "boolean" }).notNull().default(false),
     placeOfSupply: text("place_of_supply"),
+    // TDS under Chapter XVII-B of the Income Tax Act (e.g. 194C contractors, 194J
+    // professional fees, 194Q goods purchases above the threshold) is deducted from what's
+    // paid to the supplier, not from the invoice value itself — tracked here so the
+    // payable balance and TDS-payable liability both stay correct.
+    tdsSectionCode: text("tds_section_code"),
+    tdsRateBasisPoints: integer("tds_rate_basis_points"),
+    tdsPaise: integer("tds_paise").notNull().default(0),
     totalPaise: integer("total_paise").notNull(),
     paidPaise: integer("paid_paise").notNull().default(0),
     status: text("status").notNull().default("received"),
@@ -520,6 +533,12 @@ export const gst2bEntries = sqliteTable("gst_2b_entries", {
 export const fixedAssets = sqliteTable("fixed_assets", {
   id:text("id").primaryKey(),ownerUserId:text("owner_user_id").notNull(),name:text("name").notNull(),category:text("category").notNull(),acquisitionDate:text("acquisition_date").notNull(),
   originalCostPaise:integer("original_cost_paise").notNull(),residualValuePaise:integer("residual_value_paise").notNull().default(0),usefulLifeMonths:integer("useful_life_months").notNull(),
+  // WDV (written-down value) is the method Section 32 of the Income Tax Act actually
+  // requires for most block-of-assets depreciation, as distinct from the SLM the books
+  // may use under the Companies Act — recorded separately since a business commonly needs
+  // both figures (book depreciation vs. tax depreciation) at year end.
+  depreciationMethod:text("depreciation_method").notNull().default("slm"),
+  wdvRateBasisPoints:integer("wdv_rate_basis_points"),
   accumulatedDepreciationPaise:integer("accumulated_depreciation_paise").notNull().default(0),lastDepreciationDate:text("last_depreciation_date"),paymentAccountCode:text("payment_account_code").notNull().default("2000"),status:text("status").notNull().default("active"),createdAt:integer("created_at").notNull(),updatedAt:integer("updated_at").notNull(),
 },t=>[index("idx_fixed_assets_owner_date").on(t.ownerUserId,t.acquisitionDate),index("idx_fixed_assets_owner_status").on(t.ownerUserId,t.status)]);
 

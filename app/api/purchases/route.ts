@@ -6,7 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { getChatGPTUser } from "../../company-auth";
 import { demoProducts } from "../../products/product-data";
 import { demoSuppliers } from "../../purchases/supplier-data";
-import { purchaseEntry } from "../../lib/accounting";
+import { purchaseEntry, tdsDeductionEntry } from "../../lib/accounting";
 import { assertPeriodOpen, prepareJournal } from "../../lib/book-server";
 const line = z.object({
   productId: z.string().min(1).max(80),
@@ -24,6 +24,10 @@ const schema = z.object({
   itcEligible:z.boolean().default(true),
   reverseCharge:z.boolean().default(false),
   placeOfSupply:z.string().trim().max(80).optional().default(""),
+  // Common Chapter XVII-B sections for a purchase/expense bill. Left blank when TDS
+  // doesn't apply (e.g. the supplier is below the deduction threshold for the year).
+  tdsSectionCode:z.enum(["","194C","194J","194Q","194I","194H"]).optional().default(""),
+  tdsRate:z.string().trim().optional().default("0"),
   notes: z.string().trim().max(500).optional().default(""),
   lines: z.array(line).min(1).max(20),
 });
@@ -129,8 +133,15 @@ export async function POST(request: Request) {
   const items = resolved.filter(
     (item): item is NonNullable<typeof item> => item !== null,
   );
+  const tdsRate = Math.round(Number(d.tdsRate || 0) * 100);
+  if (!Number.isFinite(tdsRate) || tdsRate < 0 || tdsRate > 3000)
+    return NextResponse.json({ message: "Check the TDS rate." }, { status: 400 });
   const subtotal = items.reduce((s, i) => s + i.taxable, 0),
     gst = items.reduce((s, i) => s + i.tax, 0),
+    // TDS is deducted on the taxable value, excluding GST — CBDT Circular No. 23/2017
+    // clarifies tax is deductible only on the amount, not the GST component, whenever
+    // GST is shown separately on the invoice, which Commons always does.
+    tdsPaise = d.tdsSectionCode && tdsRate ? Math.round((subtotal * tdsRate) / 10000) : 0,
     total = subtotal + (d.reverseCharge?0:gst),
     id = crypto.randomUUID(),
     number = `PUR-${d.purchaseDate.slice(0, 4)}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
@@ -139,7 +150,7 @@ export async function POST(request: Request) {
   const statements = [
     raw
       .prepare(
-        "INSERT INTO purchases (id,owner_user_id,purchase_number,supplier_id,supplier_name,supplier_gstin,supplier_invoice_number,purchase_date,subtotal_paise,gst_paise,itc_eligible,reverse_charge,place_of_supply,total_paise,status,notes,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO purchases (id,owner_user_id,purchase_number,supplier_id,supplier_name,supplier_gstin,supplier_invoice_number,purchase_date,subtotal_paise,gst_paise,itc_eligible,reverse_charge,place_of_supply,tds_section_code,tds_rate_basis_points,tds_paise,total_paise,status,notes,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       )
       .bind(
         id,
@@ -155,6 +166,9 @@ export async function POST(request: Request) {
         d.itcEligible?1:0,
         d.reverseCharge?1:0,
         d.placeOfSupply||null,
+        d.tdsSectionCode || null,
+        d.tdsSectionCode ? tdsRate : null,
+        tdsPaise,
         total,
         d.status,
         d.notes || null,
@@ -215,7 +229,7 @@ export async function POST(request: Request) {
           sourceType: "purchase",
           sourceId: id,
           description: `Goods received · ${number} · ${supplierName}`,
-          lines: purchaseEntry(subtotal, gst,true,d.itcEligible,d.reverseCharge).map((line) => line.accountCode === "2000" ? { ...line, partyType: "supplier" as const, partyId: supplierId, partyName: supplierName } : line),
+          lines: [...purchaseEntry(subtotal, gst,true,d.itcEligible,d.reverseCharge), ...tdsDeductionEntry(tdsPaise)].map((line) => line.accountCode === "2000" ? { ...line, partyType: "supplier" as const, partyId: supplierId, partyName: supplierName } : line),
         })
       : null;
     await raw.batch([...statements, ...(journal?.statements || [])]);

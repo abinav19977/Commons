@@ -229,3 +229,51 @@ test("correcting a purchase with no actual change is rejected", async () => {
   }));
   assert.equal(response.status, 400);
 });
+
+// --- CA review fixes: TDS, MSME 45-day tracking, WDV depreciation ---
+test("a purchase with a TDS section deducts TDS on the taxable value and posts it to TDS payable, net of the supplier's payable",async()=>{
+ const s=setup();
+ seedSupplier(s.db);
+ s.db.prepare("INSERT INTO products(id,owner_user_id,name,unit,item_type,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").run("prod-1","company-one","Office Supplies","NOS","product",1,1);
+ const route=s.load("app/api/purchases/route.ts");
+ const response=await route.POST(new Request("https://commons.test/api/purchases",{
+  method:"POST",
+  body:JSON.stringify({supplierId:"supp-1",supplierName:"Reliance Traders",purchaseDate:"2026-09-09",status:"received",tdsSectionCode:"194J",tdsRate:"10",lines:[{productId:"prod-1",quantity:"1",unitCost:"100000",gstRate:"18"}]}),
+ }));
+ assert.equal(response.status,201,JSON.stringify(response.data));
+ const purchase=s.db.prepare("SELECT tds_section_code,tds_rate_basis_points,tds_paise,total_paise FROM purchases WHERE owner_user_id='company-one'").get();
+ assert.equal(purchase.tds_section_code,"194J");
+ assert.equal(purchase.tds_rate_basis_points,1000);
+ assert.equal(purchase.tds_paise,1000000);// 10% of taxable Rs 1,00,000 = Rs 10,000
+ const tdsLine=s.db.prepare("SELECT credit_paise FROM journal_lines WHERE account_code='2320' AND owner_user_id='company-one'").get();
+ assert.equal(tdsLine.credit_paise,1000000);
+ assert.equal(s.db.prepare("SELECT SUM(debit_paise-credit_paise) n FROM journal_lines WHERE owner_user_id='company-one'").get().n,0);
+});
+
+test("paying a TDS-affected bill down to its net amount marks it fully paid, and net-of-TDS overpayment is rejected",async()=>{
+ const s=setup();
+ seedSupplier(s.db);
+ s.db.prepare("INSERT INTO purchases (id,owner_user_id,purchase_number,supplier_id,supplier_name,purchase_date,subtotal_paise,gst_paise,tds_paise,itc_eligible,reverse_charge,total_paise,paid_paise,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+  .run("pur-tds","company-one","PUR-TDS","supp-1","Reliance Traders","2026-09-09",100000,18000,10000,1,0,118000,0,"received",1);
+ const route=s.load("app/api/accounts/payables/route.ts");
+ // Net payable is 118000-10000=108000 paise; paying the full gross 118000 must be rejected.
+ const overpay=await route.POST(new Request("https://commons.test/api/accounts/payables",{method:"POST",body:JSON.stringify({purchaseId:"pur-tds",paymentDate:"2026-09-10",amount:"1180",paymentMode:"bank_transfer"})}));
+ assert.equal(overpay.status,400);
+ const response=await route.POST(new Request("https://commons.test/api/accounts/payables",{method:"POST",body:JSON.stringify({purchaseId:"pur-tds",paymentDate:"2026-09-10",amount:"1080",paymentMode:"bank_transfer"})}));
+ assert.equal(response.status,201,JSON.stringify(response.data));
+ const purchase=s.db.prepare("SELECT paid_paise,status FROM purchases WHERE id='pur-tds'").get();
+ assert.equal(purchase.paid_paise,108000);
+ assert.equal(purchase.status,"paid");
+});
+
+test("WDV depreciation charges a percentage of the current written-down value, not a fixed slice of original cost",async()=>{
+ const s=setup();
+ const route=s.load("app/api/accounts/assets/route.ts");
+ const acquire=await route.POST(new Request("https://commons.test/api/accounts/assets",{method:"POST",body:JSON.stringify({action:"acquire",name:"Delivery Van",category:"Vehicle",acquisitionDate:"2026-04-01",cost:"1000000",residualValue:"0",usefulLifeMonths:60,paymentAccountCode:"1010",depreciationMethod:"wdv",wdvRateBasisPoints:1500})}));
+ assert.equal(acquire.status,201,JSON.stringify(acquire.data));
+ const asset=s.db.prepare("SELECT id FROM fixed_assets WHERE owner_user_id='company-one'").get();
+ const dep=await route.POST(new Request("https://commons.test/api/accounts/assets",{method:"POST",body:JSON.stringify({action:"depreciate",assetId:asset.id,postingDate:"2027-03-31",months:12})}));
+ assert.equal(dep.status,201,JSON.stringify(dep.data));
+ // 15% WDV on Rs 10,00,000 (no depreciation claimed yet) for 12 months = Rs 1,50,000.
+ assert.equal(s.db.prepare("SELECT accumulated_depreciation_paise FROM fixed_assets WHERE id=?").get(asset.id).accumulated_depreciation_paise,15000000);
+});

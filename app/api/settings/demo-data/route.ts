@@ -9,8 +9,14 @@ const schema=z.object({action:z.enum(["populate","reset"]),confirmation:z.string
 const prefix="commons-demo-";
 
 function cleanup(raw:ReturnType<typeof getRawDb>,owner:string){return [
+  // The audit trail is never deleted, including here — not even for synthetic demo
+  // entries. Indian audit-trail rules (Companies (Accounts) Rules, Rule 3(1)) require an
+  // edit log that cannot be tampered with or disabled; a code path that deletes
+  // audit_events, however narrowly scoped, is exactly the kind of exception that
+  // undermines "cannot be disabled" in an audit. The demo entries' journal_entries/
+  // journal_lines are removed as before; their audit_events rows simply become historical
+  // records of a demo that once existed, same as any other reversed/corrected entry.
   raw.prepare("DELETE FROM journal_lines WHERE owner_user_id=? AND entry_id IN (SELECT id FROM journal_entries WHERE owner_user_id=? AND source_type LIKE 'demo_seed_%')").bind(owner,owner),
-  raw.prepare("DELETE FROM audit_events WHERE owner_user_id=? AND entity_id IN (SELECT id FROM journal_entries WHERE owner_user_id=? AND source_type LIKE 'demo_seed_%')").bind(owner,owner),
   raw.prepare("DELETE FROM journal_entries WHERE owner_user_id=? AND source_type LIKE 'demo_seed_%'").bind(owner),
   raw.prepare("DELETE FROM invoice_payments WHERE owner_user_id=? AND id LIKE ?").bind(owner,`${prefix}%`),
   raw.prepare("DELETE FROM invoice_items WHERE owner_user_id=? AND id LIKE ?").bind(owner,`${prefix}%`),

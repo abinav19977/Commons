@@ -148,6 +148,13 @@
       "when": 1789664521152,
       "tag": "0021_nasty_killmonger",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1789736568760,
+      "tag": "0022_vengeful_the_hood",
+      "breakpoints": true
     }
   ]
 }

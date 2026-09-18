@@ -40,6 +40,10 @@ const supplierSchema = z
     pinCode: optionalText(6),
     paymentTermsDays: z.string().trim().optional().default("0"),
     openingPayable: z.string().trim().optional().default("0"),
+    // Section 43B(h): only Micro and Small enterprises get the 45-day protection —
+    // Medium enterprises are explicitly excluded from that section.
+    msmeCategory: z.enum(["none", "micro", "small", "medium"]).default("none"),
+    udyamNumber: optionalText(20),
     notes: optionalText(1000),
     active: z.boolean(),
   })
@@ -146,7 +150,7 @@ export async function POST(request: Request) {
   try {
     await getRawDb()
       .prepare(
-        "INSERT INTO suppliers (id,owner_user_id,name,contact_name,primary_phone,secondary_phone,email,gst_registration_type,gstin,pan,address_line_1,address_line_2,city,state,pin_code,payment_terms_days,opening_payable_paise,notes,active,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO suppliers (id,owner_user_id,name,contact_name,primary_phone,secondary_phone,email,gst_registration_type,gstin,pan,address_line_1,address_line_2,city,state,pin_code,payment_terms_days,opening_payable_paise,msme_category,udyam_number,notes,active,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       )
       .bind(
         id,
@@ -166,6 +170,8 @@ export async function POST(request: Request) {
         emptyToNull(data.pinCode),
         paymentTermsDays,
         Math.round(openingPayable * 100),
+        data.msmeCategory,
+        emptyToNull(data.udyamNumber),
         emptyToNull(data.notes),
         data.active ? 1 : 0,
         now,

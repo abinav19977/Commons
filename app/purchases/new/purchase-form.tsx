@@ -214,6 +214,18 @@ export default function PurchaseForm({
           <label><span>Place of supply</span><input name="placeOfSupply" defaultValue={supplier.state}/></label>
           <label className="check-field"><input type="checkbox" name="itcEligible" defaultChecked/><span>Input tax credit appears eligible in books</span></label>
           <label className="check-field"><input type="checkbox" name="reverseCharge"/><span>Reverse charge applies</span></label>
+          <label>
+            <span>TDS section (if applicable)</span>
+            <select name="tdsSectionCode" defaultValue="">
+              <option value="">No TDS</option>
+              <option value="194C">194C — Contractors</option>
+              <option value="194J">194J — Professional/technical fees</option>
+              <option value="194Q">194Q — Purchase of goods</option>
+              <option value="194I">194I — Rent</option>
+              <option value="194H">194H — Commission/brokerage</option>
+            </select>
+          </label>
+          <label><span>TDS rate (%)</span><input name="tdsRate" type="number" min="0" max="30" step="0.01" defaultValue="0"/></label>
         </div>
       </section>
       <section className="bill-section">
