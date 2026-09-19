@@ -91,3 +91,13 @@ test("vouchers parked on an unclassified ledger return to the import queue once 
  assert.equal(s.db.prepare("SELECT status FROM tally_transfers WHERE id='held-1'").get().status,"review");
  assert.equal(s.db.prepare("SELECT status FROM tally_transfers WHERE id='held-2'").get().status,"needs_mapping");
 });
+
+test("a balances-only master update stores balances without blanking the ledger's group",async()=>{
+ const s=setup();await s.seed();
+ await s.call({action:"masters",ledgers:[{name:"Rent Payable",topGroup:"Current Liabilities"}],stockItems:[]});
+ const r=await s.call({action:"masters",ledgers:[{name:"Rent Payable",openingPaise:-25000,closingPaise:-40000},{name:"Brand New",openingPaise:100,closingPaise:200}],stockItems:[],booksFrom:"2023-04-01"});
+ assert.equal(r.status,200);
+ const row=s.db.prepare("SELECT top_group,opening_paise,closing_paise FROM tally_masters WHERE owner_user_id='company-one' AND kind='ledger' AND name='Rent Payable'").get();
+ assert.equal(row.top_group,"Current Liabilities");assert.equal(row.opening_paise,-25000);assert.equal(row.closing_paise,-40000);
+ assert.equal(s.db.prepare("SELECT top_group d FROM tally_masters WHERE owner_user_id='company-one' AND kind='meta' AND name='books_from'").get().d,"2023-04-01");
+});

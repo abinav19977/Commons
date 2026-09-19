@@ -105,7 +105,7 @@ def voucher_types_xml(company=""):
     ET.SubElement(coll, "NATIVEMETHOD").text = "NAME"
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
-def masters_xml(kind, company="", start=None, end=None):
+def masters_xml(kind, company=""):
     """Export Group/Ledger/StockItem masters so Commons can auto-map ledgers by their
     Tally group and pre-fill stock-item unit/GST rate/cost, instead of needing a manual
     ledger-mapping spreadsheet for every company."""
@@ -118,11 +118,6 @@ def masters_xml(kind, company="", start=None, end=None):
     ET.SubElement(variables, "SVEXPORTFORMAT").text = "$$SysName:XML"
     if company:
         ET.SubElement(variables, "SVCURRENTCOMPANY").text = company
-    if kind == "Ledger" and start and end:
-        # Balances are computed for this period, so opening = balance at books-start and
-        # closing = balance today -- the same figures a Tally trial balance shows.
-        ET.SubElement(variables, "SVFROMDATE").text = start.strftime("%Y%m%d")
-        ET.SubElement(variables, "SVTODATE").text = end.strftime("%Y%m%d")
     message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
     coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsMasters" + kind, "ISMODIFY": "No"})
     ET.SubElement(coll, "TYPE").text = kind
@@ -132,12 +127,31 @@ def masters_xml(kind, company="", start=None, end=None):
     # detail fits in ~1 MB total this way, well under the cap, in under 6 seconds).
     if kind == "StockItem":
         fetch, native = "Name,Parent,Baseunits,Openingrate,Gstdetails", "NAME,PARENT,BASEUNITS,OPENINGRATE,GSTDETAILS.LIST,STATEWISEDETAILS.LIST,RATEDETAILS.LIST"
-    elif kind == "Ledger":
-        fetch, native = "Name,Parent,Openingbalance,Closingbalance", "NAME,PARENT,OPENINGBALANCE,CLOSINGBALANCE"
     else:
         fetch, native = "Name,Parent", "NAME,PARENT"
     ET.SubElement(coll, "FETCH").text = fetch
     ET.SubElement(coll, "NATIVEMETHOD").text = native
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+def ledger_balances_xml(company, start, end):
+    """Opening (at books-start) and closing (today) balance of every ledger. Kept as its own
+    request: Tally has to compute these over the whole period and answers one request at a
+    time, so bundling it with the quick masters call made connecting look frozen."""
+    root = ET.Element("ENVELOPE")
+    header = ET.SubElement(root, "HEADER")
+    for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Collection"), ("ID", "CommonsLedgerBalances")]:
+        ET.SubElement(header, name).text = value
+    desc = ET.SubElement(ET.SubElement(root, "BODY"), "DESC")
+    variables = ET.SubElement(desc, "STATICVARIABLES")
+    ET.SubElement(variables, "SVEXPORTFORMAT").text = "$$SysName:XML"
+    ET.SubElement(variables, "SVCURRENTCOMPANY").text = company
+    ET.SubElement(variables, "SVFROMDATE").text = start.strftime("%Y%m%d")
+    ET.SubElement(variables, "SVTODATE").text = end.strftime("%Y%m%d")
+    message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
+    coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsLedgerBalances", "ISMODIFY": "No"})
+    ET.SubElement(coll, "TYPE").text = "Ledger"
+    ET.SubElement(coll, "FETCH").text = "Name,Openingbalance,Closingbalance"
+    ET.SubElement(coll, "NATIVEMETHOD").text = "NAME,OPENINGBALANCE,CLOSINGBALANCE"
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 def company_collection_xml():
@@ -342,10 +356,13 @@ class Transport:
                 return dt.date(int(raw_date[0:4]), int(raw_date[4:6]), int(raw_date[6:8]))
         return None
 
-    def masters(self, company, start=None, end=None):
+    def ledger_balances(self, company, start, end):
+        return self.tally(ledger_balances_xml(company, start, end)).findall(".//LEDGER")
+
+    def masters(self, company):
         return {
             "groups": self.tally(masters_xml("Group", company)).findall(".//GROUP"),
-            "ledgers": self.tally(masters_xml("Ledger", company, start, end)).findall(".//LEDGER"),
+            "ledgers": self.tally(masters_xml("Ledger", company)).findall(".//LEDGER"),
             "stockitems": self.tally(masters_xml("StockItem", company)).findall(".//STOCKITEM"),
         }
 
@@ -409,6 +426,7 @@ class Connector:
         self.db.execute("CREATE TABLE IF NOT EXISTS received (scope TEXT, guid TEXT, digest TEXT, PRIMARY KEY(scope,guid))")
         self.scope = company + ":" + guid
         self.masters_pushed = False
+        self.balance_note = ""
         self.skipped = []
 
     def call(self, action, **payload):
@@ -477,12 +495,7 @@ class Connector:
     def push_masters(self):
         """Send Tally's Group/Ledger/StockItem masters to Commons once per run so ledger
         mapping and stock-item GST rate/cost are resolved automatically instead of by hand."""
-        try:
-            books_from = self.transport.books_from(self.company)
-        except Exception:
-            books_from = None
-        today = dt.date.today()
-        data = self.transport.masters(self.company, books_from, today)
+        data = self.transport.masters(self.company)
         def field(node, name):
             child = node.find(name)
             return (child.text or "").strip() if child is not None and child.text else ""
@@ -528,11 +541,7 @@ class Connector:
             if not name:
                 continue
             parent = field(ledger, "PARENT")
-            entry = {"name": name, "topGroup": top_group(parent) if parent else ""}
-            for key, tag in (("openingPaise", "OPENINGBALANCE"), ("closingPaise", "CLOSINGBALANCE")):
-                paise = balance_paise(field(ledger, tag))
-                if paise is not None: entry[key] = paise
-            ledgers.append(entry)
+            ledgers.append({"name": name, "topGroup": top_group(parent) if parent else ""})
         def gst_rate_basis_points(node):
             # A stock item can carry several GSTDETAILS.LIST entries, one per date its
             # rate last changed (APPLICABLEFROM) -- only the most recent one is the rate
@@ -580,9 +589,37 @@ class Connector:
         # thousands of ledgers/stock items, so send them in bounded chunks.
         chunk = 250
         for i in range(0, len(ledgers), chunk):
-            self.call("masters", ledgers=ledgers[i:i + chunk], stockItems=[], booksFrom=books_from.isoformat() if books_from else None)
+            self.call("masters", ledgers=ledgers[i:i + chunk], stockItems=[])
         for i in range(0, len(stockitems), chunk):
             self.call("masters", ledgers=[], stockItems=stockitems[i:i + chunk])
+
+    def push_balances(self):
+        """Send each ledger's opening/closing balance so Commons can post Tally's opening
+        balances and show a ledger-by-ledger comparison."""
+        books_from = self.transport.books_from(self.company)
+        if not books_from:
+            raise ValueError("Tally did not report when this company's books start.")
+        nodes = self.transport.ledger_balances(self.company, books_from, dt.date.today())
+        rows = []
+        for node in nodes:
+            name = (node.attrib.get("NAME") or node.findtext("NAME") or "").strip()
+            if not name: continue
+            entry = {"name": name}
+            for key, tag in (("openingPaise", "OPENINGBALANCE"), ("closingPaise", "CLOSINGBALANCE")):
+                paise = balance_paise(node.findtext(tag))
+                if paise is not None: entry[key] = paise
+            if len(entry) > 1: rows.append(entry)
+        for i in range(0, len(rows), 250):
+            self.call("masters", ledgers=rows[i:i + 250], stockItems=[], booksFrom=books_from.isoformat())
+        return len(rows)
+
+    def _balances_job(self):
+        self.balance_note = "Reading Tally balances (this can take a few minutes)…"
+        try:
+            count = self.push_balances()
+            self.balance_note = "Tally balances sent for %d ledgers." % count
+        except Exception as error:
+            self.balance_note = "Tally balances could not be read: %s" % str(error)[:160]
 
     def cycle(self, receiving_day=None):
         self.verify_company()
@@ -592,6 +629,9 @@ class Connector:
             except Exception:
                 pass  # Master sync is best-effort; it must never block voucher sync.
             self.masters_pushed = True
+            # Balances are read in the background so connecting and syncing never wait on Tally
+            # computing them; progress is appended to the status line below.
+            threading.Thread(target=self._balances_job, daemon=True).start()
         self.flush_results()
         job = self.call("poll").get("job")
         result = "Connected. No approved outgoing vouchers waiting."
@@ -607,6 +647,8 @@ class Connector:
                 raise ValueError("More than 2000 vouchers in this day. Run a full backfill instead.")
             count = self.push_vouchers(incoming)
             result += f" Received {count} new or changed vouchers for {receiving_day}."
+        if self.balance_note:
+            result += " " + self.balance_note
         return result
 
     def push_vouchers(self, vouchers):
