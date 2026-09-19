@@ -311,3 +311,34 @@ test("an income ledger read as-at today (current year only) is compared with the
  const genuine=deriveOpenings([{name:"Salary",group:"Indirect Expenses",opening:null,closing:-555000,basis:"period"}],[],window);
  assert.equal(genuine.unexplained[0].amount,-555000);
 });
+
+test("receipts entered on account are netted against a customer's oldest bills instead of leaving them all 'unpaid'",()=>{
+ const s=setup();const {allocateBalance}=s.load("app/lib/receivables-ledger.ts");
+ const bills=[{number:"B3",due:"2026-03-01",outstanding:30000},{number:"B1",due:"2026-01-01",outstanding:35400},{number:"B2",due:"2026-02-01",outstanding:35400}];
+ // Bills total 100,800 but the ledger says only 40,000 is still owed: the oldest 60,800 was paid on account.
+ const r=allocateBalance(40000,bills);
+ assert.deepEqual(Array.from(r.remaining.map(b=>[b.number,b.outstanding])),[["B2",10000],["B3",30000]]);
+ assert.equal(r.unattributed,0);
+ assert.equal(allocateBalance(0,bills).remaining.length,0);        // Union Bank: Tally says nothing owed
+ assert.equal(allocateBalance(-5000,bills).remaining.length,0);    // customer is in credit
+ // Owing more than the open bills means an older (opening) balance on top.
+ const opening=allocateBalance(150000,bills);
+ assert.equal(opening.remaining.length,3);assert.equal(opening.unattributed,49200);
+});
+
+test("every receivable/payable line from a Tally voucher carries its customer or supplier, including journals",async()=>{
+ const s=setup();
+ s.db.prepare("INSERT INTO tally_masters(id,owner_user_id,kind,name,top_group,updated_at) VALUES (?,?,?,?,?,?)").run("m1","company-one","ledger","Om Traders","Sundry Debtors",1);
+ s.db.prepare("INSERT INTO tally_masters(id,owner_user_id,kind,name,top_group,updated_at) VALUES (?,?,?,?,?,?)").run("m2","company-one","ledger","Kerala Polymers","Sundry Creditors",1);
+ // A journal has no voucher-level party, yet it moves two individual customers'/suppliers' balances.
+ const journal=`<VOUCHER><GUID>party-journal</GUID><ALTERID>1</ALTERID><DATE>20260909</DATE><VOUCHERTYPENAME>Journal</VOUCHERTYPENAME><VOUCHERNUMBER>5</VOUCHERNUMBER><ISCANCELLED>No</ISCANCELLED><ALLLEDGERENTRIES.LIST><LEDGERNAME>Om Traders</LEDGERNAME><AMOUNT>-500</AMOUNT></ALLLEDGERENTRIES.LIST><ALLLEDGERENTRIES.LIST><LEDGERNAME>Kerala Polymers</LEDGERNAME><AMOUNT>500</AMOUNT></ALLLEDGERENTRIES.LIST></VOUCHER>`;
+ const r=await s.engine.prepareConnectedImport("company-one","accountant",journal);
+ assert.deepEqual(Array.from(r.issues),[]);
+ await s.raw.batch(r.statements);
+ const lines=s.db.prepare("SELECT account_code,party_type,party_id,party_name,debit_paise,credit_paise FROM journal_lines WHERE owner_user_id='company-one' ORDER BY account_code").all();
+ const receivable=lines.find(l=>l.account_code==="1100"),payable=lines.find(l=>l.account_code==="2000");
+ assert.equal(receivable.party_name,"Om Traders");assert.equal(receivable.party_type,"customer");assert.equal(receivable.debit_paise,50000);
+ assert.equal(payable.party_name,"Kerala Polymers");assert.equal(payable.party_type,"supplier");
+ assert.equal(s.db.prepare("SELECT id FROM customers WHERE display_name='Om Traders'").get().id,receivable.party_id);
+ assert.equal(s.db.prepare("SELECT id FROM suppliers WHERE name='Kerala Polymers'").get().id,payable.party_id);
+});

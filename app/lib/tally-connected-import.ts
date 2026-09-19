@@ -2,7 +2,7 @@ import { getRawDb } from "../../db";
 import { assertPeriodOpen,prepareJournal } from "./book-server";
 import { digest } from "./tally-bridge";
 import { parseTallyVouchers,resolveMasterLedgerCode,TALLY_LEDGER_MAP } from "./tally";
-import { CORE_ACCOUNTS } from "./accounting";
+import { CORE_ACCOUNTS,type BookLine } from "./accounting";
 import { documentFromNode,descendants,parseXml,type TallyDocument } from "./tally-document";
 
 type Prior={id:string;revision:string;payload:string;local_id:string|null;journal_id:string|null};
@@ -185,7 +185,21 @@ export async function prepareConnectedImport(owner:string,actor:string,xml:strin
  let journalId=prior?.journal_id||null;
  const oldJournal=prior?.journal_id?await raw.prepare("SELECT account_code,account_name,debit_paise,credit_paise FROM journal_lines WHERE owner_user_id=? AND entry_id=?").bind(owner,prior.journal_id).all<{account_code:string;account_name:string;debit_paise:number;credit_paise:number}>():null;
  if(oldJournal?.results.length&&!priorDoc?.cancelled){const reversal=await prepareJournal({ownerUserId:owner,actor,entryDate:doc.date,sourceType:"tally_reversal",sourceId:key+":"+revision,description:"Tally correction of "+doc.number,lines:oldJournal.results.map(l=>({accountCode:l.account_code,accountName:l.account_name,debitPaise:l.credit_paise,creditPaise:l.debit_paise}))});statements.push(...reversal.statements);}
- if(!doc.cancelled&&!legacy){const journal=await prepareJournal({ownerUserId:owner,actor,entryDate:doc.date,sourceType:"tally_import",sourceId:key+":"+revision,description:`Tally ${doc.type} ${doc.number} · ${doc.narration}`,lines:parsed.lines});journalId=journal.id;statements.push(...journal.statements);}else if(legacy)journalId=legacy.id;
+ // Every receivable/payable line carries the customer or supplier it belongs to (not just the voucher's
+ // main party): journals, receipts and adjustments move individual customers' balances too, and the
+ // per-customer receivable/payable figures are read from these lines.
+ const journalLines:BookLine[]=[];
+ for(const line of parsed.lines){
+  const {ledgerName,...rest}=line;
+  if(ledgerName&&(line.accountCode==="1100"||line.accountCode==="2000")){
+   const isCustomer=line.accountCode==="1100",list=isCustomer?customers.results:suppliers.results;
+   const known=list.find(r=>r.name===ledgerName);
+   const id=known?.id||"tp-"+(await digest(owner+":"+(isCustomer?"customer":"supplier")+":"+ledgerName)).slice(0,40);
+   if(!known)statements.push(isCustomer?raw.prepare("INSERT OR IGNORE INTO customers(id,owner_user_id,display_name,primary_phone,gst_registration_type,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").bind(id,owner,ledgerName,"","unregistered",now,now):raw.prepare("INSERT OR IGNORE INTO suppliers(id,owner_user_id,name,primary_phone,gst_registration_type,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").bind(id,owner,ledgerName,"","unregistered",now,now));
+   journalLines.push({...rest,partyType:isCustomer?"customer":"supplier",partyId:id,partyName:ledgerName});
+  }else journalLines.push(rest);
+ }
+ if(!doc.cancelled&&!legacy){const journal=await prepareJournal({ownerUserId:owner,actor,entryDate:doc.date,sourceType:"tally_import",sourceId:key+":"+revision,description:`Tally ${doc.type} ${doc.number} · ${doc.narration}`,lines:journalLines});journalId=journal.id;statements.push(...journal.statements);}else if(legacy)journalId=legacy.id;
  const recordId=crypto.randomUUID();
  statements.unshift(raw.prepare("INSERT INTO tally_import_receipts(id,owner_user_id,source_key,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,key+":after:"+(prior?.revision||"new"),now));
  statements.push(raw.prepare("INSERT INTO tally_documents(id,owner_user_id,guid,revision,kind,local_id,journal_id,payload,created_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(recordId,owner,doc.guid,revision,doc.type,id,journalId,JSON.stringify(doc),now));

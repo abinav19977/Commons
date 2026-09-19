@@ -146,7 +146,7 @@ export function parseTallyVouchers(xml:string,parties:{customers:string[];suppli
    // for the posted debit/credit below, is trusted on its own.
    const isRounding=key.includes("round");
    if(!isRounding&&(deemed&&!['yes','no'].includes(deemed)||deemed&&((deemed==='yes')!==(amount<0)))){issues.push("Ledger debit/credit sign disagrees for "+name);continue;}
-   lines.push({accountCode:mapped.code,accountName:mapped.name,debitPaise:Math.max(0,-amount),creditPaise:Math.max(0,amount)});
+   lines.push({accountCode:mapped.code,accountName:mapped.name,ledgerName:name,debitPaise:Math.max(0,-amount),creditPaise:Math.max(0,amount)});
   }
   const debits=lines.reduce((s,l)=>s+l.debitPaise,0),credits=lines.reduce((s,l)=>s+l.creditPaise,0);
   if(!Number.isSafeInteger(debits)||!Number.isSafeInteger(credits))issues.push("Voucher exceeds supported precision");

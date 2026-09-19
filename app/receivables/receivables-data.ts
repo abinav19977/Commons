@@ -1,5 +1,6 @@
 import { getRawDb } from "../../db";
 import { daysAgoIST, todayIST } from "../lib/date";
+import { allocateBalance } from "../lib/receivables-ledger";
 
 export const defaultReminderTemplate =
   "Hello {customer}, this is a gentle reminder that {amount} is pending against {invoice_count} invoice(s). The oldest due date is {oldest_due_date}. Please share an update on payment. Thank you.";
@@ -63,12 +64,19 @@ export async function getReceivableReminders(
 ): Promise<ReceivableReminder[]> {
   if (!settings.enabled) return [];
   const cutoff = daysAgoIST(settings.overdueDays);
-  const [invoiceRows, logRows] = await Promise.all([
+  const [invoiceRows, ledgerRows, logRows] = await Promise.all([
     getRawDb()
       .prepare(
-        "SELECT COALESCE(i.customer_id,'') AS customer_id,COALESCE(c.nickname,i.customer_name) AS customer_name,COALESCE(c.primary_phone,'') AS primary_phone,COALESCE(c.email,'') AS email,SUM(i.total_paise - i.paid_paise) AS outstanding_paise,COUNT(i.id) AS invoice_count,MIN(i.due_date) AS oldest_due_date,GROUP_CONCAT(i.invoice_number) AS invoice_numbers FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id AND c.owner_user_id = i.owner_user_id WHERE i.owner_user_id = ? AND i.status NOT IN ('paid','cancelled') AND i.due_date IS NOT NULL AND i.due_date <= ? GROUP BY i.customer_id,COALESCE(c.nickname,i.customer_name),c.primary_phone,c.email HAVING SUM(i.total_paise - i.paid_paise) >= ? ORDER BY MIN(i.due_date) ASC",
+        "SELECT COALESCE(i.customer_id,'') AS customer_id,COALESCE(c.nickname,i.customer_name) AS customer_name,COALESCE(c.primary_phone,'') AS primary_phone,COALESCE(c.email,'') AS email,i.invoice_number,COALESCE(i.due_date,i.invoice_date) AS due_date,i.total_paise - i.paid_paise AS outstanding FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id AND c.owner_user_id = i.owner_user_id WHERE i.owner_user_id = ? AND i.status NOT IN ('paid','cancelled') AND i.total_paise > i.paid_paise",
       )
-      .bind(ownerUserId, cutoff, settings.minimumOutstandingPaise)
+      .bind(ownerUserId)
+      .all<Record<string, unknown>>(),
+    // What each customer owes according to the books (bills less receipts, credit notes and adjustments).
+    getRawDb()
+      .prepare(
+        "SELECT jl.party_id AS customer_id,SUM(jl.debit_paise - jl.credit_paise) AS balance FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id AND je.owner_user_id = jl.owner_user_id WHERE jl.owner_user_id = ? AND jl.account_code = '1100' AND jl.party_id IS NOT NULL AND je.status = 'posted' GROUP BY jl.party_id",
+      )
+      .bind(ownerUserId)
       .all<Record<string, unknown>>(),
     getRawDb()
       .prepare(
@@ -83,31 +91,40 @@ export async function getReceivableReminders(
       `${String(row.customer_id || "")}:${String(row.customer_name || "")}`,
       Number(row.last_reminder_at || 0),
     );
-  const rows: ReceivableReminder[] = (invoiceRows.results || []).map((row) => {
+  const ledger = new Map<string, number>();
+  for (const row of ledgerRows.results || []) ledger.set(String(row.customer_id), Number(row.balance || 0));
+  type Group = { customerId: string; customerName: string; primaryPhone: string; email: string; bills: { number: string; due: string; outstanding: number }[] };
+  const groups = new Map<string, Group>();
+  for (const row of invoiceRows.results || []) {
     const customerId = String(row.customer_id || "");
-    const customerName = String(row.customer_name || "Customer");
-    const oldestDueDate = String(row.oldest_due_date || cutoff);
-    return {
-      customerId,
-      customerName,
-      primaryPhone: String(row.primary_phone || ""),
-      email: String(row.email || ""),
-      outstandingPaise: Number(row.outstanding_paise || 0),
-      invoiceCount: Number(row.invoice_count || 0),
+    const key = customerId || `name:${String(row.customer_name || "")}`;
+    const group = groups.get(key) || { customerId, customerName: String(row.customer_name || "Customer"), primaryPhone: String(row.primary_phone || ""), email: String(row.email || ""), bills: [] };
+    group.bills.push({ number: String(row.invoice_number), due: String(row.due_date), outstanding: Number(row.outstanding || 0) });
+    groups.set(key, group);
+  }
+  const rows: ReceivableReminder[] = [];
+  for (const group of groups.values()) {
+    // Net the bills against the ledger when the books track this customer; otherwise fall back to the bills.
+    const balance = group.customerId && ledger.has(group.customerId) ? ledger.get(group.customerId)! : null;
+    const net = balance === null ? { remaining: group.bills, unattributed: 0 } : allocateBalance(balance, group.bills);
+    const overdue = net.remaining.filter((bill) => bill.due <= cutoff);
+    const outstanding = overdue.reduce((sum, bill) => sum + bill.outstanding, 0);
+    if (!overdue.length || outstanding < settings.minimumOutstandingPaise) continue;
+    const oldestDueDate = overdue.map((bill) => bill.due).sort()[0];
+    rows.push({
+      customerId: group.customerId,
+      customerName: group.customerName,
+      primaryPhone: group.primaryPhone,
+      email: group.email,
+      outstandingPaise: outstanding,
+      invoiceCount: overdue.length,
       oldestDueDate,
-      daysOverdue: Math.max(
-        0,
-        Math.floor(
-          (Date.parse(`${todayIST()}T00:00:00Z`) -
-            Date.parse(`${oldestDueDate}T00:00:00Z`)) /
-            86400000,
-        ),
-      ),
-      invoiceNumbers: String(row.invoice_numbers || "").split(",").filter(Boolean),
-      lastReminderAt:
-        lastReminder.get(`${customerId}:${customerName}`) || null,
-    };
-  });
+      daysOverdue: Math.max(0, Math.floor((Date.parse(`${todayIST()}T00:00:00Z`) - Date.parse(`${oldestDueDate}T00:00:00Z`)) / 86400000)),
+      invoiceNumbers: overdue.map((bill) => bill.number),
+      lastReminderAt: lastReminder.get(`${group.customerId}:${group.customerName}`) || null,
+    });
+  }
+  rows.sort((a, b) => (a.oldestDueDate < b.oldestDueDate ? -1 : 1));
 
   return rows;
 }

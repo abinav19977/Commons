@@ -6,6 +6,8 @@ export type BookLine = {
   partyType?: "customer" | "supplier" | "employee";
   partyId?: string | null;
   partyName?: string | null;
+  // Name of the source ledger (Tally import only), used to attach the customer/supplier.
+  ledgerName?: string;
 };
 
 export const CORE_ACCOUNTS = [

@@ -1,5 +1,6 @@
 import { getRawDb } from "../../db";
 import { todayIST } from "./date";
+import { getReceivableReminders, getReceivableSettings } from "../receivables/receivables-data";
 
 function fiscalStart(today: string) {
   const year = Number(today.slice(0, 4)), month = Number(today.slice(5, 7));
@@ -75,6 +76,9 @@ export async function getBusinessMetrics(
   ]);
   const row = (index: number) =>
     (results[index].results?.[0] || {}) as Record<string, number>;
+  // Overdue receivables use the same net-of-receipts figures as the Receivables page, so the two
+  // never disagree (unpaid bills alone overstate what is owed when receipts were entered on account).
+  const reminders = await getReceivableReminders(ownerUserId, await getReceivableSettings(ownerUserId)).catch(() => null);
   return {
     customers: Number(row(0).value || 0),
     products: Number(row(1).value || 0),
@@ -82,8 +86,8 @@ export async function getBusinessMetrics(
     invoices: Number(row(3).value || 0),
     revenuePaise: Number(row(8).revenue || 0),
     lowStock: Number(row(4).value || 0),
-    overdueReceivables: Number(row(5).value || 0),
-    overduePaise: Number(row(5).overdue || 0),
+    overdueReceivables: reminders ? reminders.length : Number(row(5).value || 0),
+    overduePaise: reminders ? reminders.reduce((sum, r) => sum + r.outstandingPaise, 0) : Number(row(5).overdue || 0),
     pendingPayroll: Number(row(6).value || 0),
     pendingPayrollPaise: Number(row(6).pending || 0),
     bankReview: Number(row(7).value || 0),
