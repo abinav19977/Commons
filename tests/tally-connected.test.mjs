@@ -174,3 +174,21 @@ test("two vouchers for the same brand-new party import together in one batch (bu
  assert.equal(s.db.prepare("SELECT COUNT(*) n FROM invoices").get().n,2);
  assert.equal(s.db.prepare("SELECT COUNT(*) n FROM products WHERE owner_user_id='company-one'").get().n,1);
 });
+
+test("Tally voucher numbers that repeat (other financial year or series) import with a suffix instead of failing",async()=>{
+ const s=setup();
+ // Tally restarts numbering each year/series, but Commons keeps purchase and invoice
+ // numbers unique per company; the second voucher used to abort with a UNIQUE violation.
+ await s.apply(invoice({guid:"p1",type:"Purchase"}));
+ await s.apply(invoice({guid:"p2",type:"Purchase"}).replace("<VOUCHERNUMBER>p2<","<VOUCHERNUMBER>p1<"));
+ const purchases=s.db.prepare("SELECT purchase_number n FROM purchases WHERE owner_user_id='company-one' ORDER BY purchase_number").all().map(r=>r.n);
+ assert.equal(purchases.length,2);assert.equal(purchases[0],"p1");assert.ok(/^p1~[0-9a-f]{6}$/.test(purchases[1]));
+ // A revision of the suffixed voucher keeps the same number rather than clashing again.
+ await s.apply(invoice({guid:"p2",type:"Purchase",amount:150,rev:2}).replace("<VOUCHERNUMBER>p2<","<VOUCHERNUMBER>p1<"));
+ assert.equal(s.db.prepare("SELECT COUNT(*) n FROM purchases WHERE owner_user_id='company-one'").get().n,2);
+ // Same for sales invoices (separate company so the party is only a customer).
+ const t=setup();
+ await t.apply(invoice({guid:"s1"}));
+ await t.apply(invoice({guid:"s2"}).replace("<VOUCHERNUMBER>s2<","<VOUCHERNUMBER>s1<"));
+ assert.equal(t.db.prepare("SELECT COUNT(DISTINCT invoice_number) n FROM invoices WHERE owner_user_id='company-one'").get().n,2);
+});

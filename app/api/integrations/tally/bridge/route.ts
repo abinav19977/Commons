@@ -49,17 +49,19 @@ async function handlePost(request:Request){
   if(body.confirmation!=="IMPORT TALLY")return reply("Confirm the import first.");
   const pending=await raw.prepare("SELECT id,xml FROM tally_transfers WHERE owner_user_id=? AND direction='in' AND status='review' ORDER BY created_at LIMIT ?").bind(user.id,IMPORT_QUEUE_BATCH).all<{id:string;xml:string}>();
   const statements=[];let imported=0,duplicates=0,needsMapping=0;const problems:string[]=[];
+  const hold=(transferId:string,issue:string)=>{needsMapping++;problems.push(issue);
+   // Move it out of 'review' so the next batch call skips it instead of reselecting the
+   // same stuck voucher forever; "Review voucher" still opens it via its transfer id.
+   statements.push(raw.prepare("UPDATE tally_transfers SET status='needs_mapping',message=?,updated_at=? WHERE id=? AND owner_user_id=?").bind(issue.slice(0,300),Date.now(),transferId,user.id));};
   for(const transfer of pending.results){
    try{
     const result=await prepareConnectedImport(user.id,user.email,transfer.xml,{});
     if(result.duplicate){duplicates++;statements.push(raw.prepare("UPDATE tally_transfers SET status='imported',updated_at=? WHERE id=? AND owner_user_id=?").bind(Date.now(),transfer.id,user.id));}
-    else if(result.issues.length){needsMapping++;const issue=result.issues[0];problems.push(`${result.doc.type} ${result.doc.number||result.doc.guid}: ${issue}`);
-     // Move it out of 'review' so the next batch call skips it instead of reselecting the
-     // same stuck voucher forever; "Review voucher" still opens it via its transfer id.
-     statements.push(raw.prepare("UPDATE tally_transfers SET status='needs_mapping',message=?,updated_at=? WHERE id=? AND owner_user_id=?").bind(issue.slice(0,300),Date.now(),transfer.id,user.id));}
-    else{statements.push(...result.statements);imported++;}
-   }catch(error){needsMapping++;const issue=error instanceof Error?error.message:"A queued voucher could not be processed.";problems.push(issue);
-    statements.push(raw.prepare("UPDATE tally_transfers SET status='needs_mapping',message=?,updated_at=? WHERE id=? AND owner_user_id=?").bind(issue.slice(0,300),Date.now(),transfer.id,user.id));}
+    else if(result.issues.length)hold(transfer.id,result.issues[0]);
+    // Each voucher is saved on its own (not one big batch): a failure then holds back only
+    // that voucher, and later vouchers see the customers/numbers the earlier ones created.
+    else{await raw.batch(result.statements);imported++;}
+   }catch(error){hold(transfer.id,error instanceof Error?error.message:"A queued voucher could not be processed.");}
   }
   if(statements.length)await raw.batch(statements);
   const remaining=await raw.prepare("SELECT COUNT(*) c FROM tally_transfers WHERE owner_user_id=? AND direction='in' AND status='review'").bind(user.id).first<{c:number}>();
