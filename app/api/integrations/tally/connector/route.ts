@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { parseXml,descendants,value } from "../../../../lib/tally-document";
 import { getRawDb } from "../../../../../db";
 import { authenticateBridge,digest,voucherBlocks,readBoundedJson,type Bridge } from "../../../../lib/tally-bridge";
+import { resolveMasterLedgerCode } from "../../../../lib/tally";
 const reply=(message:string,status=400)=>NextResponse.json({message},{status});
 // Shared by the single-voucher "inbox" action and the bulk "inbox_batch" action used
 // for one-time historical catch-up, so both paths dedupe/revision-check identically.
@@ -66,7 +67,12 @@ export async function POST(request:Request){
    statements.push(raw.prepare("INSERT INTO tally_masters(id,owner_user_id,kind,name,top_group,unit,gst_rate_basis_points,cost_paise,updated_at) VALUES (?,?,'stockitem',?,NULL,?,?,?,?) ON CONFLICT(owner_user_id,kind,name) DO UPDATE SET unit=excluded.unit,gst_rate_basis_points=excluded.gst_rate_basis_points,cost_paise=excluded.cost_paise,updated_at=excluded.updated_at").bind(crypto.randomUUID(),bridge.owner_user_id,s.name.trim().slice(0,200),unit,gst,cost,now));
   }
   for(let i=0;i<statements.length;i+=100)await raw.batch(statements.slice(i,i+100));
-  return NextResponse.json({ok:true,ledgers:ledgers.length,stockItems:stockItems.length});
+  // Vouchers parked as "Map ledger X" become importable once X's group is known, so put them
+  // back in the queue instead of waiting for someone to notice.
+  const nowClassified=ledgers.filter((l:{name?:unknown;topGroup?:unknown})=>typeof l?.name==="string"&&l.name.trim()&&resolveMasterLedgerCode(l.name,typeof l.topGroup==="string"?l.topGroup:null)).map((l:{name:string})=>`Map ledger “${l.name.trim()}”`);
+  let requeued=0;
+  for(let i=0;i<nowClassified.length;i+=80){const part=nowClassified.slice(i,i+80);const done=await raw.prepare(`UPDATE tally_transfers SET status='review',message=NULL,updated_at=? WHERE owner_user_id=? AND direction='in' AND status='needs_mapping' AND message IN (${part.map(()=>"?").join(",")})`).bind(Date.now(),bridge.owner_user_id,...part).run();requeued+=Number(done.meta?.changes||0);}
+  return NextResponse.json({ok:true,ledgers:ledgers.length,stockItems:stockItems.length,requeued});
  }
  if(body.action==="inbox"){
   const result=await receiveVoucher(raw,bridge,body.xml);

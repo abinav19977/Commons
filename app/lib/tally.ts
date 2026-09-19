@@ -78,6 +78,17 @@ const GROUP_ACCOUNT_CODES: Record<string, string> = {
   // like "Wage Payable" or "GST Payable" nest, and Commons already has a matching account.
   "bank od a/c": "1010",
   "provisions": "2300",
+  // Broad standard groups with no closer Commons account: a ledger that sits directly under
+  // one of these (or a custom sub-group of it) gets the matching catch-all account instead
+  // of needing a manual choice for every loan, deposit or payable.
+  "current assets": "1420",
+  "loans & advances (asset)": "1420",
+  "deposits (asset)": "1600",
+  "investments": "1600",
+  "current liabilities": "2330",
+  "loans (liability)": "2400",
+  "secured loans": "2400",
+  "unsecured loans": "2400",
 };
 
 // "Duties & Taxes" holds both ITC (asset) and payable (liability) ledgers, so the
@@ -86,7 +97,16 @@ export function resolveMasterLedgerCode(name: string, topGroup: string | null): 
   const key = name.toLowerCase().trim();
   if (key.includes("itc") || ["cgst", "sgst", "igst", "input cgst", "input sgst", "input igst"].includes(key)) return "1300";
   const group = (topGroup || "").toLowerCase().trim();
-  if (group === "duties & taxes") return key.includes("cgst") || key.includes("sgst") || key.includes("igst") ? "2100" : undefined;
+  const tds = /\btds\b|26as|tax deducted/.test(key);
+  if (group === "duties & taxes") {
+    if (key.includes("cgst") || key.includes("sgst") || key.includes("igst")) return "2100";
+    if (/input|rcm/.test(key) && /gst|tax|rcm/.test(key)) return "1300";
+    if (tds) return "2320";
+    if (key.includes("gst")) return "2100";
+    return undefined;
+  }
+  // Tax already deducted from what we earned is a receivable, not something we owe.
+  if (tds && ["current assets", "loans & advances (asset)"].includes(group)) return "1430";
   return GROUP_ACCOUNT_CODES[group];
 }
 

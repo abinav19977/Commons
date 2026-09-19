@@ -16,6 +16,9 @@ export const CORE_ACCOUNTS = [
   { code: "1300", name: "Input GST credit", category: "asset", normalSide: "debit", systemKey: "input_gst" },
   { code: "1400", name: "Supplier advances", category: "asset", normalSide: "debit", systemKey: "supplier_advances" },
   { code: "1410", name: "Employee advances", category: "asset", normalSide: "debit", systemKey: "employee_advances" },
+  { code: "1420", name: "Other current assets", category: "asset", normalSide: "debit", systemKey: "other_current_assets" },
+  { code: "1430", name: "TDS receivable", category: "asset", normalSide: "debit", systemKey: "tds_receivable" },
+  { code: "1600", name: "Deposits and investments", category: "asset", normalSide: "debit", systemKey: "deposits_investments" },
   { code: "1500", name: "Fixed assets", category: "asset", normalSide: "debit", systemKey: "fixed_assets" },
   { code: "1510", name: "Accumulated depreciation", category: "asset", normalSide: "credit", systemKey: "accumulated_depreciation" },
   { code: "1520", name: "Allowance for doubtful accounts", category: "asset", normalSide: "credit", systemKey: "doubtful_accounts" },
@@ -26,6 +29,8 @@ export const CORE_ACCOUNTS = [
   { code: "2300", name: "Provisions and accrued expenses", category: "liability", normalSide: "credit", systemKey: "provisions" },
   { code: "2310", name: "Income tax payable", category: "liability", normalSide: "credit", systemKey: "income_tax_payable" },
   { code: "2320", name: "TDS payable", category: "liability", normalSide: "credit", systemKey: "tds_payable" },
+  { code: "2330", name: "Other current liabilities", category: "liability", normalSide: "credit", systemKey: "other_current_liabilities" },
+  { code: "2400", name: "Loans payable", category: "liability", normalSide: "credit", systemKey: "loans_payable" },
   { code: "3000", name: "Owner's capital", category: "equity", normalSide: "credit", systemKey: "capital" },
   { code: "3100", name: "Opening balance equity", category: "equity", normalSide: "credit", systemKey: "opening_equity" },
   { code: "3200", name: "Retained earnings", category: "equity", normalSide: "credit", systemKey: "retained_earnings" },
@@ -256,8 +261,8 @@ export function adjustmentEntry(type: "sales_return" | "credit_note" | "purchase
 
 export function reportFromBalances(balances: Record<string, number>) {
   const value = (code: string) => balances[code] || 0;
-  const assets = value("1000") + value("1010") + value("1100") + value("1200") + value("1300") + value("1400") + value("1410") + value("1500") - value("1510") - value("1520");
-  const liabilities = value("2000") + value("2100") + value("2200") + value("2210") + value("2300") + value("2310");
+  const assets = value("1000") + value("1010") + value("1100") + value("1200") + value("1300") + value("1400") + value("1410") + value("1420") + value("1430") + value("1500") - value("1510") - value("1520") + value("1600");
+  const liabilities = value("2000") + value("2100") + value("2200") + value("2210") + value("2300") + value("2310") + value("2320") + value("2330") + value("2400");
   const equity = value("3000") + value("3100") + value("3200");
   const income = value("4000") + value("4010") - value("4090");
   const expenses = value("5000") - value("5090") + value("5100") + value("6000") + value("6100") + value("6200") + value("6300") + value("6400");

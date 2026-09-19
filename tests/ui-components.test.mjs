@@ -121,6 +121,18 @@ test("reports fixed assets, contra assets, provisions and year-end balances",asy
  assert.deepEqual(reportFromBalances({"1500":1000000,"1510":200000,"1520":50000,"2300":60000,"2310":40000,"3200":300000,"6200":200000,"6300":50000,"6400":40000}),{assets:750000,liabilities:100000,equity:300000,income:0,expenses:290000,profit:-290000});
 });
 
+test("every core account lands in a report total, so assets = liabilities + equity + profit still holds",async()=>{
+ const {reportFromBalances,CORE_ACCOUNTS}=await vite.ssrLoadModule("/app/lib/accounting.ts");
+ assert.equal(new Set(CORE_ACCOUNTS.map(a=>a.code)).size,CORE_ACCOUNTS.length);
+ // One rupee sitting in each account on its natural side, balanced against equity.
+ const balances={};let net=0;
+ for(const a of CORE_ACCOUNTS){balances[a.code]=100;}
+ const r=reportFromBalances(balances);
+ for(const a of CORE_ACCOUNTS){const counted=({asset:r.assets,liability:r.liabilities,equity:r.equity,income:r.income,expense:r.expenses})[a.category];assert.ok(counted!==0,a.code+" "+a.name+" is not in any report total");}
+ // The new catch-all accounts specifically (TDS payable was previously missing from liabilities).
+ for(const [code,field] of [["1420","assets"],["1430","assets"],["1600","assets"],["2320","liabilities"],["2330","liabilities"],["2400","liabilities"]])assert.equal(reportFromBalances({[code]:500})[field],500,code);
+});
+
 test("bookkeeping rejects unsafe precision, negative values and two-sided lines",async()=>{
  const {isBalanced}=await vite.ssrLoadModule("/app/lib/accounting.ts");
  for(const amount of [Infinity,NaN,0.1,Number.MAX_SAFE_INTEGER+1,-1])assert.equal(isBalanced([{debitPaise:amount,creditPaise:0},{debitPaise:0,creditPaise:amount}]),false);

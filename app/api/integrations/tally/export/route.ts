@@ -14,7 +14,7 @@ type Line = { account_code:string; entry_id: string; account_name: string; debit
 
 const parentByCode: Record<string, string> = {
   "1000": "Cash-in-Hand", "1010": "Bank Accounts", "1100": "Current Assets", "1200": "Stock-in-Hand",
-  "1300": "Duties & Taxes", "1400": "Current Assets", "1410": "Current Assets", "2000": "Current Liabilities",
+  "1300": "Duties & Taxes", "1400": "Current Assets", "1410": "Current Assets", "1420": "Current Assets", "1430": "Current Assets", "1600": "Investments", "2000": "Current Liabilities", "2320": "Duties & Taxes", "2330": "Current Liabilities", "2400": "Loans (Liability)",
   "2100": "Duties & Taxes", "2200": "Current Liabilities", "2210": "Current Liabilities", "3000": "Capital Account",
   "3100": "Capital Account", "4000": "Sales Accounts", "4010": "Indirect Incomes", "4090": "Sales Accounts",
   "5000": "Purchase Accounts", "5090": "Purchase Accounts", "5100": "Direct Expenses", "6000": "Indirect Expenses", "6100": "Indirect Expenses",

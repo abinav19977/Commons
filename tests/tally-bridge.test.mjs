@@ -10,7 +10,7 @@ function setup(){
  const raw={prepare(sql){let args=[];return {bind(...v){args=v;return this;},async first(){return db.prepare(sql).get(...args)||null;},async all(){return {results:db.prepare(sql).all(...args)};},async run(){return {meta:db.prepare(sql).run(...args)};}};},async batch(statements){const results=[];for(const statement of statements)results.push(await statement.run());return results;}};
  let helpers;
  function load(file){const exports={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(file,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,TextEncoder,TextDecoder,Request,Date,crypto:webcrypto,require(name){
-  if(name.endsWith("/db"))return {getRawDb:()=>raw};if(name.endsWith("tally-bridge"))return helpers;if(name.endsWith("tally-document"))return load("app/lib/tally-document.ts");
+  if(name.endsWith("/db"))return {getRawDb:()=>raw};if(name.endsWith("tally-bridge"))return helpers;if(name.endsWith("tally-document"))return load("app/lib/tally-document.ts");if(name.endsWith("/lib/tally"))return load("app/lib/tally.ts");if(name==="./accounting")return load("app/lib/accounting.ts");
   if(name==="next/server")return {NextResponse:{json:(data,opts)=>({data,status:opts?.status||200})}};
   throw Error(name);
  }});return exports;}
@@ -80,4 +80,14 @@ test("batch inbox accepts many vouchers in one call, matching single-inbox dedup
  assert.equal((await s.call({action:"inbox_batch",items:[]})).status,400);
  assert.equal((await s.call({action:"inbox_batch",items:Array(201).fill(xml)})).status,400);
  assert.equal((await s.call({action:"inbox_batch",items:[xml+xml]})).data.invalid,1);
+});
+
+test("vouchers parked on an unclassified ledger return to the import queue once the master sync classifies it",async()=>{
+ const s=setup();await s.seed();
+ s.db.prepare("INSERT INTO tally_transfers VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run("held-1","company-one","bridge-one","in","k1","JV 1","<x/>","d1","needs_mapping","Map ledger “Rent Payable”",1,1);
+ s.db.prepare("INSERT INTO tally_transfers VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run("held-2","company-one","bridge-one","in","k2","JV 2","<x/>","d2","needs_mapping","Map ledger “Mystery Ledger”",1,1);
+ const result=await s.call({action:"masters",ledgers:[{name:"Rent Payable",topGroup:"Current Liabilities"},{name:"Mystery Ledger",topGroup:"Suspense A/c"}]});
+ assert.equal(result.status,200);
+ assert.equal(s.db.prepare("SELECT status FROM tally_transfers WHERE id='held-1'").get().status,"review");
+ assert.equal(s.db.prepare("SELECT status FROM tally_transfers WHERE id='held-2'").get().status,"needs_mapping");
 });

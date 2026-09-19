@@ -205,3 +205,17 @@ test("an account the user chose for an unclassified ledger is remembered and let
  await s.raw.batch(after.statements);
  assert.equal(s.db.prepare("SELECT SUM(debit_paise) n FROM journal_lines WHERE account_code='1000'").get().n,5000);
 });
+
+test("broad Tally groups and TDS/GST names resolve to Commons accounts without a manual choice",()=>{
+ const s=setup();const {resolveMasterLedgerCode:r}=s.load("app/lib/tally.ts");
+ assert.equal(r("Rent Payable","Current Liabilities"),"2330");
+ assert.equal(r("Yes Bank Car Loan","Secured Loans"),"2400");
+ assert.equal(r("Federal Bank Deposit","Deposits (Asset)"),"1600");
+ assert.equal(r("TDS AY 2025 - 26","Current Assets"),"1430");
+ assert.equal(r("TDS on Rent","Duties & Taxes"),"2320");
+ assert.equal(r("Input Tax RCM","Duties & Taxes"),"1300");
+ assert.equal(r("Gst Paid","Duties & Taxes"),"2100");
+ assert.equal(r("Some Advance","Current Assets"),"1420");
+ assert.equal(r("Unknown","Suspense A/c"),undefined);
+ assert.equal(r("Petty Cash","Cash-in-Hand"),"1000");
+});

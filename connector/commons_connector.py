@@ -477,6 +477,10 @@ class Connector:
             # purposes, and Provisions (e.g. "Wage Payable", "GST Payable" custom groups
             # nest under it) has a direct Commons equivalent.
             "bank od a/c", "provisions",
+            # Broad standard groups (custom sub-groups nest under these); Commons has a catch-all
+            # account for each, so ledgers here no longer need a manual choice.
+            "current assets", "current liabilities", "loans & advances (asset)", "deposits (asset)",
+            "investments", "loans (liability)", "secured loans", "unsecured loans",
         }
         def top_group(name):
             seen, current = set(), name
