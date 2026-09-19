@@ -677,7 +677,7 @@ class Connector:
         if not closings:
             seen = sorted({e.tag for e in report.iter()})[:14]
             raise ValueError("Tally's Trial Balance had no ledger balances I could read (tags: %s)." % ", ".join(seen))
-        rows = [{"name": name, "closingPaise": paise} for name, paise in closings.items()]
+        rows = [{"name": name, "closingPaise": paise, "closingBasis": "period"} for name, paise in closings.items()]
         for i in range(0, len(rows), 250):
             self.call("masters", ledgers=rows[i:i + 250], stockItems=[], booksFrom=books_from.isoformat())
         # The Trial Balance shows some groups (debtors, creditors, banks, taxes...) only as one
@@ -693,7 +693,7 @@ class Connector:
                     name = (node.attrib.get("NAME") or node.findtext("NAME") or "").strip()
                     if name:
                         paise = balance_paise(node.findtext("CLOSINGBALANCE"))
-                        batch.append({"name": name, "closingPaise": 0 if paise is None else paise})
+                        batch.append({"name": name, "closingPaise": 0 if paise is None else paise, "closingBasis": "asat"})
                 if batch:
                     self.call("masters", ledgers=batch, stockItems=[], booksFrom=books_from.isoformat())
                     rows.extend(batch)

@@ -70,6 +70,8 @@ export const tallyMasters=sqliteTable("tally_masters",{
  unit:text("unit"),gstRateBasisPoints:integer("gst_rate_basis_points"),costPaise:integer("cost_paise"),
  // Tally ledger balances at books-start and today, credit-positive (Tally: negative = debit).
  openingPaise:integer("opening_paise"),closingPaise:integer("closing_paise"),
+ // "period" = cumulative over the books period (Trial Balance); "asat" = balance as at a date, which for income/expense ledgers is the current financial year only.
+ closingBasis:text("closing_basis"),
  updatedAt:integer("updated_at").notNull(),
 },t=>[uniqueIndex("idx_tally_masters_owner_kind_name").on(t.ownerUserId,t.kind,t.name)]);
 

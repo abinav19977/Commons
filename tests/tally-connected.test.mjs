@@ -287,3 +287,27 @@ test("a journal with GST-named ledgers (set-off, write-off, year-end) is not hel
  const caught=await s.engine.prepareConnectedImport("company-one","accountant",bad);
  assert.ok(caught.issues.some(i=>i.includes("Tax exceeds")||i.includes("do not equal")||i.includes("balanced")));
 });
+
+test("an income ledger read as-at today (current year only) is compared with the current year's vouchers, not all years'",()=>{
+ const s=setup();const {deriveOpenings,reconcileLedgers,isProfitAndLoss}=s.load("app/lib/tally-reconcile.ts");
+ const window={fyStart:"2026-04-01",isProfitAndLoss:(name,group)=>isProfitAndLoss(group)};
+ // Audit Services earned 3,000 in earlier years and 500 this year. Tally's as-at closing is this
+ // year's 500 only (income ledgers restart each April); Commons has all 3,500 imported.
+ const vouchers=[{name:"Audit Services",amount:150000,date:"2024-06-01"},{name:"Audit Services",amount:150000,date:"2025-06-01"},{name:"Audit Services",amount:50000,date:"2026-06-01"},
+   {name:"Bank",amount:-100000,date:"2024-06-01"},{name:"Bank",amount:-20000,date:"2026-07-01"}];
+ const masters=[
+  {name:"Audit Services",group:"Indirect Incomes",opening:null,closing:50000,basis:"asat"},
+  {name:"Bank",group:"Bank Accounts",opening:null,closing:-320000,basis:"asat"}];   // a balance-sheet ledger is cumulative either way
+ const r=deriveOpenings(masters,vouchers,window);
+ const by=Object.fromEntries(r.masters.map(m=>[m.name,m.opening]));
+ assert.equal(by["Audit Services"],0);          // was -300000 (a phantom 3,000 "opening") before the fix
+ assert.equal(by.Bank,-200000);                 // 3,200 closing - 1,200 moved
+ assert.equal(r.unexplained.length,0);
+ assert.equal(reconcileLedgers(r.masters,vouchers,true,window).differing,0);
+ // Read as a cumulative Trial Balance row instead, the same ledger uses every year's vouchers.
+ const period=deriveOpenings([{...masters[0],closing:350000,basis:"period"}],vouchers,window);
+ assert.equal(period.masters[0].opening,0);
+ // A genuine opening balance on a period-basis income ledger is still surfaced.
+ const genuine=deriveOpenings([{name:"Salary",group:"Indirect Expenses",opening:null,closing:-555000,basis:"period"}],[],window);
+ assert.equal(genuine.unexplained[0].amount,-555000);
+});

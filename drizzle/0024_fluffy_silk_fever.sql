@@ -1,0 +1,1 @@
+ALTER TABLE `tally_masters` ADD `closing_basis` text;

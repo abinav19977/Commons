@@ -3,21 +3,36 @@
 // as negative numbers), which is also how imported voucher ledgers are stored.
 import type { BookLine } from "./accounting";
 
-export type MasterLedger = { name: string; group: string | null; opening: number | null; closing: number | null };
-export type VoucherLedger = { name: string; amount: number };
+// basis "period": closing is cumulative over the whole books period (Trial Balance). basis "asat": closing
+// is the balance as at a date, which for an income/expense ledger is the current financial year only,
+// so it has to be compared with the current year's vouchers, not all years'.
+export type MasterLedger = { name: string; group: string | null; opening: number | null; closing: number | null; basis?: "period" | "asat" | null };
+export type VoucherLedger = { name: string; amount: number; date?: string };
+export type Window = { fyStart: string; isProfitAndLoss: (name: string, group: string | null) => boolean };
 export type Difference = { name: string; group: string | null; tally: number; commons: number; diff: number };
 
 const keyOf = (name: string) => name.toLowerCase().trim();
 
-export function reconcileLedgers(masters: MasterLedger[], vouchers: VoucherLedger[], openingsPosted: boolean) {
-  const moved = new Map<string, number>();
-  for (const l of vouchers) moved.set(keyOf(l.name), (moved.get(keyOf(l.name)) || 0) + l.amount);
+// Movement to compare with a ledger's closing balance: the current year only for an as-at income or
+// expense ledger, everything imported otherwise.
+function movementMaps(vouchers: VoucherLedger[], window?: Window) {
+  const all = new Map<string, number>(), year = new Map<string, number>();
+  for (const l of vouchers) {
+    const k = keyOf(l.name);
+    all.set(k, (all.get(k) || 0) + l.amount);
+    if (!window || !l.date || l.date >= window.fyStart) year.set(k, (year.get(k) || 0) + l.amount);
+  }
+  return (m: MasterLedger) => ((window && m.basis === "asat" && window.isProfitAndLoss(m.name, m.group) ? year : all).get(keyOf(m.name)) || 0);
+}
+
+export function reconcileLedgers(masters: MasterLedger[], vouchers: VoucherLedger[], openingsPosted: boolean, window?: Window) {
+  const movement = movementMaps(vouchers, window);
   const rows: Difference[] = [];
   let matched = 0, checked = 0;
   for (const m of masters) {
     if (m.closing === null) continue;
     checked++;
-    const commons = (openingsPosted ? m.opening || 0 : 0) + (moved.get(keyOf(m.name)) || 0);
+    const commons = (openingsPosted ? m.opening || 0 : 0) + movement(m);
     const diff = m.closing - commons;
     if (diff === 0) matched++;
     else rows.push({ name: m.name, group: m.group, tally: m.closing, commons, diff });
@@ -69,16 +84,16 @@ export const isProfitAndLoss = (group: string | null) => PROFIT_AND_LOSS_GROUPS.
 // This needs no slow per-ledger opening-balance request to Tally and is exact by construction.
 // An income or expense ledger should come out at zero; a non-zero result means Tally has activity
 // Commons doesn't (typically vouchers still held back), so those are returned for the owner to see.
-export function deriveOpenings(masters: MasterLedger[], vouchers: VoucherLedger[]) {
-  const moved = new Map<string, number>();
-  for (const l of vouchers) moved.set(keyOf(l.name), (moved.get(keyOf(l.name)) || 0) + l.amount);
+export function deriveOpenings(masters: MasterLedger[], vouchers: VoucherLedger[], window?: Window) {
+  const movement = movementMaps(vouchers, window);
   const unexplained: { name: string; amount: number }[] = [];
   const derived = masters.map((m) => {
     if (m.closing === null) return m;
-    const opening = m.closing - (moved.get(keyOf(m.name)) || 0);
-    if (opening !== 0 && isProfitAndLoss(m.group)) unexplained.push({ name: m.name, amount: opening });
+    const opening = m.closing - movement(m);
+    const pl = window ? window.isProfitAndLoss(m.name, m.group) : isProfitAndLoss(m.group);
+    if (opening !== 0 && pl) unexplained.push({ name: m.name, amount: opening });
     return { ...m, opening };
   });
   unexplained.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
-  return { masters: derived, unexplained, unexplainedTotal: unexplained.reduce((s, r) => s + Math.abs(r.amount), 0) };
+  return { masters: derived, unexplained, unexplainedTotal: unexplained.reduce((sum, r) => sum + Math.abs(r.amount), 0) };
 }

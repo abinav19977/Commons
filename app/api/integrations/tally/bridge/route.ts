@@ -7,7 +7,8 @@ import { tallyEnvelope } from "../../../../lib/tally";
 import { CORE_ACCOUNTS } from "../../../../lib/accounting";
 import { assertPeriodOpen,prepareJournal } from "../../../../lib/book-server";
 import { resolveMasterLedgerCode,TALLY_LEDGER_MAP } from "../../../../lib/tally";
-import { deriveOpenings,openingEntry,reconcileLedgers,type MasterLedger } from "../../../../lib/tally-reconcile";
+import { deriveOpenings,isProfitAndLoss,openingEntry,reconcileLedgers,type MasterLedger,type Window } from "../../../../lib/tally-reconcile";
+import { todayIST } from "../../../../lib/date";
 import { prepareConnectedImport } from "../../../../lib/tally-connected-import";
 import { GET as exportXml } from "../export/route";
 // The connector can deliver hundreds of historical vouchers into the queue in minutes
@@ -20,31 +21,35 @@ const reply=(message:string,status=400)=>NextResponse.json({message},{status});
 // cancelled ones excluded). Only the ledgers array is pulled out of each stored document in SQL,
 // because the full payload carries the raw voucher XML.
 async function movedByLedger(raw:ReturnType<typeof getRawDb>,owner:string){
- const docs=await raw.prepare("SELECT json_extract(d.payload,'$.ledgers') l FROM tally_documents d WHERE d.owner_user_id=? AND d.rowid=(SELECT MAX(x.rowid) FROM tally_documents x WHERE x.owner_user_id=d.owner_user_id AND x.guid=d.guid) AND COALESCE(json_extract(d.payload,'$.cancelled'),0)=0").bind(owner).all<{l:string|null}>();
- const moved:{name:string;amount:number}[]=[];
- for(const d of docs.results){try{for(const l of JSON.parse(d.l||"[]") as {name:string;amount:number}[])moved.push({name:l.name,amount:l.amount});}catch{}}
+ const docs=await raw.prepare("SELECT json_extract(d.payload,'$.ledgers') l,json_extract(d.payload,'$.date') dt FROM tally_documents d WHERE d.owner_user_id=? AND d.rowid=(SELECT MAX(x.rowid) FROM tally_documents x WHERE x.owner_user_id=d.owner_user_id AND x.guid=d.guid) AND COALESCE(json_extract(d.payload,'$.cancelled'),0)=0").bind(owner).all<{l:string|null;dt:string|null}>();
+ const moved:{name:string;amount:number;date?:string}[]=[];
+ for(const d of docs.results){try{for(const l of JSON.parse(d.l||"[]") as {name:string;amount:number}[])moved.push({name:l.name,amount:l.amount,date:d.dt||undefined});}catch{}}
  return {moved,vouchers:docs.results.length};
 }
-type MasterRow={name:string;top_group:string|null;opening_paise:number|null;closing_paise:number|null};
+type MasterRow={name:string;top_group:string|null;opening_paise:number|null;closing_paise:number|null;closing_basis:string|null};
+const fiscalStartOf=(d:string)=>`${Number(d.slice(5,7))>=4?d.slice(0,4):Number(d.slice(0,4))-1}-04-01`;
 async function loadBalances(raw:ReturnType<typeof getRawDb>,owner:string){
- const masters=await raw.prepare("SELECT name,top_group,opening_paise,closing_paise FROM tally_masters WHERE owner_user_id=? AND kind='ledger'").bind(owner).all<MasterRow>();
+ const masters=await raw.prepare("SELECT name,top_group,opening_paise,closing_paise,closing_basis FROM tally_masters WHERE owner_user_id=? AND kind='ledger'").bind(owner).all<MasterRow>();
  const meta=await raw.prepare("SELECT top_group d FROM tally_masters WHERE owner_user_id=? AND kind='meta' AND name='books_from'").bind(owner).first<{d:string}>();
  const saved=await raw.prepare("SELECT name,top_group code FROM tally_masters WHERE owner_user_id=? AND kind='mapping'").bind(owner).all<{name:string;code:string}>();
- const ledgers:MasterLedger[]=masters.results.map(r=>({name:r.name,group:r.top_group,opening:r.opening_paise,closing:r.closing_paise}));
- return {ledgers,booksFrom:meta?.d||null,saved:new Map(saved.results.map(r=>[r.name.toLowerCase().trim(),r.code]))};
+ const ledgers:MasterLedger[]=masters.results.map(r=>({name:r.name,group:r.top_group,opening:r.opening_paise,closing:r.closing_paise,basis:r.closing_basis==="asat"?"asat":"period"}));
+ const savedMap=new Map(saved.results.map(r=>[r.name.toLowerCase().trim(),r.code]));
+ // Income and expense ledgers are recognised by their Tally group or, failing that, by the Commons account they map to.
+ const window:Window={fyStart:fiscalStartOf(todayIST()),isProfitAndLoss:(name,group)=>{if(isProfitAndLoss(group))return true;const key=name.toLowerCase().trim();const code=savedMap.get(key)||resolveMasterLedgerCode(name,group)||TALLY_LEDGER_MAP[key]?.code;return !!code&&/^[456]/.test(code);}};
+ return {ledgers,booksFrom:meta?.d||null,saved:savedMap,window};
 }
 
 export async function GET(request:Request){
  const user=await getChatGPTUser(request);if(!user)return reply("Select your company and sign in again.",401);
  const raw=getRawDb();const bridge=await raw.prepare("SELECT id,tally_name,tally_guid,last_seen,revoked,expires_at FROM tally_bridges WHERE owner_user_id=?").bind(user.id).first();
  if(new URL(request.url).searchParams.get("reconcile")){
-  const {ledgers,booksFrom}=await loadBalances(raw,user.id);
+  const {ledgers,booksFrom,window}=await loadBalances(raw,user.id);
   const withBalances=ledgers.filter(l=>l.closing!==null);
   const {moved,vouchers}=await movedByLedger(raw,user.id);
   const posted=await raw.prepare("SELECT id FROM journal_entries WHERE owner_user_id=? AND source_type='tally_opening' AND status='posted' ORDER BY created_at DESC LIMIT 1").bind(user.id).first();
   // Opening = Tally's closing minus what the imported vouchers moved (see deriveOpenings).
-  const derived=deriveOpenings(ledgers,moved);
-  const result=reconcileLedgers(derived.masters,moved,!!posted);
+  const derived=deriveOpenings(ledgers,moved,window);
+  const result=reconcileLedgers(derived.masters,moved,!!posted,window);
   const opening=openingEntry(derived.masters,()=>({code:"3100",name:"Opening balance equity"}));
   return NextResponse.json({booksFrom,hasBalances:withBalances.length,openingsPosted:!!posted,openingLedgers:opening.ledgers,checked:result.checked,matched:result.matched,differing:result.differing,totalAbsDifference:result.totalAbsDifference,rows:result.rows.slice(0,40),vouchers,unexplained:derived.unexplained.slice(0,15),unexplainedCount:derived.unexplained.length,unexplainedTotal:derived.unexplainedTotal});
  }
@@ -97,9 +102,9 @@ async function handlePost(request:Request){
  if(body.action==="post_openings"){
   if(body.confirmation!=="POST TALLY OPENINGS")return reply("Confirm the opening balances first.");
   const loaded=await loadBalances(raw,user.id);
-  const {booksFrom,saved}=loaded;
+  const {booksFrom,saved,window}=loaded;
   if(!booksFrom||!loaded.ledgers.some(l=>l.closing!==null))return reply("Tally's balances have not arrived yet. In the connector click Read Tally balances, wait for it to finish, then try again.",409);
-  const derived=deriveOpenings(loaded.ledgers,(await movedByLedger(raw,user.id)).moved);
+  const derived=deriveOpenings(loaded.ledgers,(await movedByLedger(raw,user.id)).moved,window);
   const ledgers=derived.masters;
   const customers=await raw.prepare("SELECT id,display_name name FROM customers WHERE owner_user_id=?").bind(user.id).all<{id:string;name:string}>();
   const suppliers=await raw.prepare("SELECT id,name FROM suppliers WHERE owner_user_id=?").bind(user.id).all<{id:string;name:string}>();
