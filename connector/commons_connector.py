@@ -30,6 +30,16 @@ def parse_xml(data):
     # Tally exports a legacy U+0004 marker which is not valid XML 1.0.
     text = re.sub(r"&#(?:0*[0-8]|0*1[124-9]|0*2[0-9]|0*3[01]);", "", text)
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    # Some Tally companies emit prefixed tags/attributes (e.g. UDF:...) with no matching
+    # xmlns declaration in scope, which the XML parser rejects ("unbound prefix") and
+    # aborts an entire history pull. Commons never reads namespaces, so drop them.
+    def plain_tag(match):
+        tag = match.group(0)
+        if tag.startswith(("<?", "<!")): return tag
+        tag = re.sub(r"""\s+xmlns(?::[\w.-]+)?\s*=\s*("[^"]*"|'[^']*')""", "", tag)
+        tag = re.sub(r"^(</?)([\w.-]+):(?=[\w.-])", lambda m: m.group(1) + m.group(2) + "_", tag)
+        return re.sub(r"(\s)([\w.-]+):([\w.-]+)(\s*=)", lambda m: m.group(1) + m.group(2) + "_" + m.group(3) + m.group(4), tag)
+    text = re.sub(r"<[^<>]+>", plain_tag, text)
     root = ET.fromstring(text)
     error = root.findtext(".//LINEERROR") or root.findtext(".//ERROR")
     if error or root.findtext(".//STATUS") == "0":

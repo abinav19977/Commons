@@ -27,6 +27,12 @@ class Fake:
         return {'ok':True}
 
 class Tests(unittest.TestCase):
+
+    def test_prefixed_tags_without_namespace_declaration_parse(self):
+        # Confirmed on a real company's history pull: UDF: tags with no xmlns in scope made
+        # the whole Full sync stop with "unbound prefix".
+        root = parse_xml('<ENVELOPE><TALLYMESSAGE><VOUCHER><UDF:BILLCOUNT.LIST><NAME>a:b</NAME></UDF:BILLCOUNT.LIST></VOUCHER></TALLYMESSAGE></ENVELOPE>')
+        self.assertEqual(root.findtext('.//UDF_BILLCOUNT.LIST/NAME'), 'a:b')
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.fake=Fake();self.connector=Connector(self.fake,'My business','company-guid',self.temp.name+'/state.sqlite')
     def tearDown(self):self.connector.db.close();self.temp.cleanup()
@@ -54,7 +60,7 @@ class Tests(unittest.TestCase):
     def test_incoming_unchanged_only_transmitted_once(self):
         self.fake.saved=[ET.fromstring(VOUCHER)]
         self.connector.cycle('2026-09-09');self.connector.cycle('2026-09-09')
-        self.assertEqual(len([c for c in self.fake.calls if c['action']=='inbox']),1)
+        self.assertEqual(len([c for c in self.fake.calls if c['action'] in ('inbox','inbox_batch')]),1)
     def test_tampered_payload_never_posts(self):
         self.assertEqual(self.connector.deliver({**JOB,'digest':'bad'})[0],'blocked');self.assertEqual(self.fake.posts,0)
     def test_xml_entities_and_redirects_are_rejected(self):
