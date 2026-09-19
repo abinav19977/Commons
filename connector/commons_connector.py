@@ -629,9 +629,6 @@ class Connector:
             except Exception:
                 pass  # Master sync is best-effort; it must never block voucher sync.
             self.masters_pushed = True
-            # Balances are read in the background so connecting and syncing never wait on Tally
-            # computing them; progress is appended to the status line below.
-            threading.Thread(target=self._balances_job, daemon=True).start()
         self.flush_results()
         job = self.call("poll").get("job")
         result = "Connected. No approved outgoing vouchers waiting."
@@ -906,11 +903,41 @@ def main():
                 events.put(("status","Full sync stopped: "+str(error)))
         backfill_thread=threading.Thread(target=task,daemon=True)
         backfill_thread.start()
+    balances_thread=None
+    def run_balances():
+        # Heavy for Tally (it computes every ledger's balance over the whole books period) and
+        # can make a large company unresponsive, so this only ever runs when asked, never on connect.
+        nonlocal balances_thread
+        if balances_thread and balances_thread.is_alive():
+            return
+        try:
+            name = company.get()
+            guid = companies.get(name)
+            if not guid or not re.fullmatch(r"[a-f0-9]{64}", token.get().strip()):
+                raise ValueError("Select a discovered company and paste a valid connection key.")
+        except Exception as error:
+            messagebox.showerror("Tally balances",str(error))
+            return
+        if not messagebox.askyesno("Read Tally balances","This asks Tally for every ledger's opening and closing balance. On a large company Tally can be busy for several minutes and may be slow to respond meanwhile.\n\nRun it now, while nobody is using Tally?"):
+            return
+        token_value,port_value=token.get().strip(),int(port.get())
+        def task():
+            events.put(("status","Reading Tally balances - this can take several minutes. Keep Tally open and leave it alone."))
+            try:
+                job=Connector(Transport(token_value,port_value),name,guid,folder / (hashlib.sha256((name+guid).encode()).hexdigest()[:24]+".sqlite"))
+                count=job.push_balances()
+                job.db.close()
+                events.put(("status","Tally balances sent for %d ledgers. Now click Check against Tally in Commons." % count))
+            except Exception as error:
+                events.put(("status","Tally balances could not be read: "+str(error)[:200]))
+        balances_thread=threading.Thread(target=task,daemon=True)
+        balances_thread.start()
     buttons=ttk.Frame(frame)
     buttons.pack(fill="x",pady=10)
     ttk.Button(buttons,text="Connect & start",command=connect).pack(side="left")
     ttk.Button(buttons,text="Pause",command=lambda:(stop.set(),status.set("Pausing after the current request finishes…"))).pack(side="left",padx=10)
     ttk.Button(buttons,text="Full sync now",command=run_backfill).pack(side="left",padx=10)
+    ttk.Button(buttons,text="Read Tally balances",command=run_balances).pack(side="left",padx=10)
     ttk.Label(frame,text="\"Full sync now\" pulls this company's complete Tally history once (masters and every voucher back to books-start) — useful the first time a company is connected. The regular 30-second sync above only needs the last few days.",wraplength=690).pack(anchor="w",pady=4)
     ttk.Label(frame,text="Outgoing: approved accounting vouchers. Incoming: supported bills, purchases, receipts and stock details after review in Commons. Government filing and physical deletions are not automatic.",wraplength=690).pack(anchor="w",pady=8)
     loaded_settings=False
