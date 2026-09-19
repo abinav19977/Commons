@@ -67,22 +67,44 @@ class Tests(unittest.TestCase):
           '<DSPACCNAME><DSPDISPNAME>Some Group Total</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>999</DSPCLDRAMTA></DSPCLDRAMT></DSPACCINFO></ENVELOPE>')
         rows=trial_balance_closings(report,["Capital Account","Bank"])
         self.assertEqual(rows,{"Capital Account":188003155,"Bank":-150050})
-    def test_balances_are_one_report_and_sent_in_chunks_with_progress(self):
+    def test_ledgers_the_trial_balance_lists_only_as_group_totals_are_read_in_small_batches(self):
         import datetime as dt
-        names=['L%d'%n for n in range(300)]
+        names=['L%d'%n for n in range(60)]
+        in_report=names[:10]
+        asked=[]
         def tally(xml,timeout=180):
             raw=xml.decode() if isinstance(xml,bytes) else xml
             if 'Trial Balance' in raw:
-                return ET.fromstring('<ENVELOPE>'+''.join('<DSPACCNAME><DSPDISPNAME>%s</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>10</DSPCLDRAMTA></DSPCLDRAMT></DSPACCINFO>'%n for n in names)+'</ENVELOPE>')
+                return ET.fromstring('<ENVELOPE>'+''.join('<DSPACCNAME><DSPDISPNAME>%s</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>10</DSPCLDRAMTA></DSPCLDRAMT></DSPACCINFO>'%n for n in in_report)+'</ENVELOPE>')
             return ET.fromstring('<ENVELOPE>'+''.join('<LEDGER NAME="%s"/>'%n for n in names)+'</ENVELOPE>')
+        def ledger_closings(company,end,chunk,timeout=90):
+            asked.append(list(chunk))
+            return [ET.fromstring('<LEDGER NAME="%s"><CLOSINGBALANCE>%s</CLOSINGBALANCE></LEDGER>'%(n,'' if n=='L59' else '-5.00')) for n in chunk]
         self.fake.tally=tally;self.fake.books_from=lambda company:dt.date(2023,4,1)
         self.fake.trial_balance=lambda company,start,end,timeout=240:tally(b'Trial Balance')
+        self.fake.ledger_closings=ledger_closings
         steps=[]
-        result=self.connector.push_balances(lambda label,done,total,per:steps.append((done,total)))
-        self.assertEqual(result,{"ledgers":300,"of":300})
-        masters=[c for c in self.fake.calls if c['action']=='masters']
-        self.assertEqual(len(masters),2);self.assertEqual(masters[0]['ledgers'][0],{"name":"L0","closingPaise":-1000})
-        self.assertEqual(steps[-1],(300,300))
+        result=self.connector.push_balances(lambda label,done,total,per:steps.append((label,done,total)))
+        self.assertEqual(result,{"ledgers":60,"of":60,"unreadable":0})
+        self.assertEqual([len(c) for c in asked],[25,25])            # 50 ledgers, never all at once
+        self.assertFalse(set(in_report)&{n for c in asked for n in c})  # nothing already read is asked again
+        sent={l["name"]:l["closingPaise"] for c in self.fake.calls if c["action"]=="masters" for l in c["ledgers"]}
+        self.assertEqual(sent["L0"],-1000);self.assertEqual(sent["L20"],-500);self.assertEqual(sent["L59"],0)  # blank balance = zero
+        self.assertEqual(steps[-1][1:],(50,50))
+    def test_a_stubborn_batch_is_skipped_and_three_in_a_row_stop_but_keep_what_was_sent(self):
+        import datetime as dt
+        names=['L%d'%n for n in range(200)]
+        def tally(xml,timeout=180):
+            raw=xml.decode() if isinstance(xml,bytes) else xml
+            if 'Trial Balance' in raw:
+                return ET.fromstring('<ENVELOPE><DSPACCNAME><DSPDISPNAME>L0</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>1</DSPCLDRAMTA></DSPCLDRAMT></DSPACCINFO></ENVELOPE>')
+            return ET.fromstring('<ENVELOPE>'+''.join('<LEDGER NAME="%s"/>'%n for n in names)+'</ENVELOPE>')
+        def ledger_closings(company,end,chunk,timeout=90): raise TimeoutError('timed out')
+        self.fake.tally=tally;self.fake.books_from=lambda company:dt.date(2023,4,1)
+        self.fake.trial_balance=lambda company,start,end,timeout=240:tally(b'Trial Balance')
+        self.fake.ledger_closings=ledger_closings
+        result=self.connector.push_balances()
+        self.assertEqual(result["ledgers"],1);self.assertGreater(result["unreadable"],100)
     def test_an_unreadable_trial_balance_says_what_tags_came_back(self):
         import datetime as dt
         self.fake.books_from=lambda company:dt.date(2023,4,1)

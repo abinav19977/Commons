@@ -134,6 +134,28 @@ def masters_xml(kind, company=""):
     ET.SubElement(coll, "NATIVEMETHOD").text = native
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
+def ledger_closings_xml(company, end, names):
+    """Closing balance as at `end` for a few named ledgers. No SVFROMDATE on purpose: a closing
+    balance only depends on the date it is read at, and leaving the start at the company's
+    current year means Tally works through months, not the three years that made the earlier
+    per-ledger request time out."""
+    root = ET.Element("ENVELOPE")
+    header = ET.SubElement(root, "HEADER")
+    for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Collection"), ("ID", "CommonsLedgerClosings")]:
+        ET.SubElement(header, name).text = value
+    desc = ET.SubElement(ET.SubElement(root, "BODY"), "DESC")
+    variables = ET.SubElement(desc, "STATICVARIABLES")
+    for tag, text in [("SVEXPORTFORMAT", "$$SysName:XML"), ("SVCURRENTCOMPANY", company), ("SVTODATE", end.strftime("%Y%m%d"))]:
+        ET.SubElement(variables, tag).text = text
+    message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
+    ET.SubElement(message, "SYSTEM", {"TYPE": "Formulae", "NAME": "CommonsLedgerChunk", "ISMODIFY": "No", "ISFIXED": "No", "ISINTERNAL": "No"}).text = " OR ".join('$Name = "%s"' % n for n in names)
+    coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsLedgerClosings", "ISMODIFY": "No"})
+    ET.SubElement(coll, "TYPE").text = "Ledger"
+    ET.SubElement(coll, "FETCH").text = "Name,Closingbalance"
+    ET.SubElement(coll, "NATIVEMETHOD").text = "NAME,CLOSINGBALANCE"
+    ET.SubElement(coll, "FILTER").text = "CommonsLedgerChunk"
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
 def trial_balance_xml(company, start, end):
     """Tally's own Trial Balance report for the books period. Tally computes this report in one
     pass (it is what its Balance Sheet screen uses), so it answers in seconds; asking a Ledger
@@ -397,6 +419,9 @@ class Transport:
         root = self.tally(voucher_index_xml(company, start, end), 120)
         return [{"guid": identity(v), "date": (v.findtext("DATE") or "").strip(), "type": (v.findtext("VOUCHERTYPENAME") or "").strip(), "number": (v.findtext("VOUCHERNUMBER") or "").strip()} for v in root.findall(".//COLLECTION/VOUCHER") if identity(v)]
 
+    def ledger_closings(self, company, end, names, timeout=90):
+        return self.tally(ledger_closings_xml(company, end, names), timeout).findall(".//LEDGER")
+
     def trial_balance(self, company, start, end, timeout=240):
         return self.tally(trial_balance_xml(company, start, end), timeout)
 
@@ -653,12 +678,35 @@ class Connector:
             seen = sorted({e.tag for e in report.iter()})[:14]
             raise ValueError("Tally's Trial Balance had no ledger balances I could read (tags: %s)." % ", ".join(seen))
         rows = [{"name": name, "closingPaise": paise} for name, paise in closings.items()]
-        started = time.monotonic()
         for i in range(0, len(rows), 250):
             self.call("masters", ledgers=rows[i:i + 250], stockItems=[], booksFrom=books_from.isoformat())
-            done = min(i + 250, len(rows))
-            note("Sending balances to Commons", done, len(rows), (time.monotonic() - started) / done)
-        return {"ledgers": len(rows), "of": len([n for n in names if n])}
+        # The Trial Balance shows some groups (debtors, creditors, banks, taxes...) only as one
+        # total. Read those ledgers' closing balances separately, a few at a time, so one slow
+        # answer can't hold everything up and progress can be shown.
+        remaining = [n for n in names if n and n not in closings and '"' not in n]
+        size, failed, unreadable, started = 25, 0, 0, time.monotonic()
+        for start in range(0, len(remaining), size):
+            chunk = remaining[start:start + size]
+            try:
+                batch = []
+                for node in self.transport.ledger_closings(self.company, dt.date.today(), chunk):
+                    name = (node.attrib.get("NAME") or node.findtext("NAME") or "").strip()
+                    if name:
+                        paise = balance_paise(node.findtext("CLOSINGBALANCE"))
+                        batch.append({"name": name, "closingPaise": 0 if paise is None else paise})
+                if batch:
+                    self.call("masters", ledgers=batch, stockItems=[], booksFrom=books_from.isoformat())
+                    rows.extend(batch)
+                failed = 0
+            except Exception:
+                failed += 1
+                unreadable += len(chunk)
+                if failed >= 3:
+                    unreadable += len(remaining) - start - size
+                    break
+            done = min(start + size, len(remaining))
+            note("Reading the remaining ledgers", done, len(remaining), (time.monotonic() - started) / done)
+        return {"ledgers": len(rows), "of": len([n for n in names if n]), "unreadable": max(0, unreadable)}
 
     def _balances_job(self):
         self.balance_note = "Reading Tally balances (this can take a few minutes)…"
@@ -1039,7 +1087,7 @@ def main():
                 result=job.push_balances(progress)
                 job.db.close()
                 events.put(("progress_done","Finished in "+eta_line(0,0,None,started).replace(" so far","")+"."))
-                events.put(("status","Tally balances sent for %d of %d ledgers. Now click Check against Tally in Commons." % (result["ledgers"],result["of"])))
+                events.put(("status","Tally balances sent for %d of %d ledgers.%s Now click Check against Tally in Commons." % (result["ledgers"],result["of"]," %d could not be read (Tally was slow)." % result["unreadable"] if result["unreadable"] else "")))
             except Exception as error:
                 events.put(("progress_done","Stopped after "+eta_line(0,0,None,started).replace(" so far","")+"."))
                 events.put(("status","Tally balances could not be read: "+str(error)[:220]))

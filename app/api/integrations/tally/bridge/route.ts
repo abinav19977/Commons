@@ -134,7 +134,7 @@ async function handlePost(request:Request){
   const journal=await prepareJournal({ownerUserId:user.id,actor:user.email,entryDate:booksFrom,sourceType:"tally_opening",sourceId,description:"Opening balances from Tally",lines:plan.lines});
   statements.push(...journal.statements);
   for(let i=0;i<statements.length;i+=100)await raw.batch(statements.slice(i,i+100));
-  return NextResponse.json({message:`Opening balances from Tally posted for ${plan.ledgers} ledgers, dated ${booksFrom}.${plan.unmapped.length?` ${plan.unmapped.length} had no account and went to Opening balance equity.`:""}${derived.unexplained.length?` ${derived.unexplained.length} income or expense ledger${derived.unexplained.length===1?"":"s"} carried a balance Commons has no vouchers for (likely held-back vouchers), so it is included in the opening.`:""}`,ledgers:plan.ledgers,unmapped:plan.unmapped.slice(0,20),balancingPaise:plan.balancingPaise,unexplained:derived.unexplained.slice(0,15)});
+  return NextResponse.json({message:`Opening balances from Tally posted for ${plan.ledgers} ledgers, dated ${booksFrom}.${plan.unmapped.length?` ${plan.unmapped.length} had no account and went to Opening balance equity.`:""}${derived.unexplained.length?` ${derived.unexplained.length} income or expense ledger${derived.unexplained.length===1?"":"s"} carried a balance that did not come from vouchers (usually an opening balance entered directly on the ledger in Tally), so it is included in the opening.`:""}`,ledgers:plan.ledgers,unmapped:plan.unmapped.slice(0,20),balancingPaise:plan.balancingPaise,unexplained:derived.unexplained.slice(0,15)});
  }
  if(body.action==="import_queue"){
   if(body.confirmation!=="IMPORT TALLY")return reply("Confirm the import first.");
