@@ -78,6 +78,24 @@ export async function POST(request:Request){
   for(let i=0;i<nowClassified.length;i+=80){const part=nowClassified.slice(i,i+80);const done=await raw.prepare(`UPDATE tally_transfers SET status='review',message=NULL,updated_at=? WHERE owner_user_id=? AND direction='in' AND status='needs_mapping' AND message IN (${part.map(()=>"?").join(",")})`).bind(Date.now(),bridge.owner_user_id,...part).run();requeued+=Number(done.meta?.changes||0);}
   return NextResponse.json({ok:true,ledgers:ledgers.length,stockItems:stockItems.length,requeued});
  }
+ if(body.action==="voucher_index"){
+  // Completeness check: which of Tally's vouchers has Commons never received? Vouchers that
+  // started in Commons and were sent to Tally are "own" and are not expected to come back.
+  const items=Array.isArray(body.items)?body.items:[];
+  if(items.length>500)return reply("Too many vouchers in one request.");
+  const clean=items.filter((i:{guid?:unknown})=>typeof i?.guid==="string"&&i.guid.length>0&&i.guid.length<=160) as {guid:string;date?:unknown;type?:unknown;number?:unknown}[];
+  const have=new Set<string>();
+  for(let i=0;i<clean.length;i+=80){
+   const part=clean.slice(i,i+80).map(x=>x.guid),ph=part.map(()=>"?").join(",");
+   const [received,own]=await Promise.all([
+    raw.prepare(`SELECT source_key k FROM tally_transfers WHERE bridge_id=? AND direction='in' AND source_key IN (${ph})`).bind(bridge.id,...part).all<{k:string}>(),
+    raw.prepare(`SELECT id k FROM journal_entries WHERE owner_user_id=? AND source_type!='tally_import' AND id IN (${ph})`).bind(bridge.owner_user_id,...part).all<{k:string}>(),
+   ]);
+   for(const r of received.results)have.add(r.k);for(const r of own.results)have.add(r.k);
+  }
+  const missing=clean.filter(x=>!have.has(x.guid)).map(x=>({guid:x.guid,date:String(x.date||"").slice(0,8),type:String(x.type||"").slice(0,80),number:String(x.number||"").slice(0,60)}));
+  return NextResponse.json({ok:true,checked:clean.length,missing});
+ }
  if(body.action==="inbox"){
   const result=await receiveVoucher(raw,bridge,body.xml);
   if(result.startsWith("invalid: "))return reply(result.slice(9));

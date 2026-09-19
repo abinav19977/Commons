@@ -172,6 +172,25 @@ def trial_balance_closings(root, ledger_names):
             rows[current] = int((credit - debit) * 100)
     return rows
 
+def voucher_index_xml(company, start, end):
+    """Only the identity of every voucher in a range (GUID, date, type, number), which is tiny
+    next to the full vouchers, so a whole company's history can be listed in seconds and
+    compared with what Commons has actually received."""
+    root = ET.Element("ENVELOPE")
+    header = ET.SubElement(root, "HEADER")
+    for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Collection"), ("ID", "CommonsVoucherIndex")]:
+        ET.SubElement(header, name).text = value
+    desc = ET.SubElement(ET.SubElement(root, "BODY"), "DESC")
+    variables = ET.SubElement(desc, "STATICVARIABLES")
+    for tag, text in [("SVEXPORTFORMAT", "$$SysName:XML"), ("SVCURRENTCOMPANY", company), ("SVFROMDATE", start.strftime("%Y%m%d")), ("SVTODATE", end.strftime("%Y%m%d"))]:
+        ET.SubElement(variables, tag).text = text
+    message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
+    coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsVoucherIndex", "ISMODIFY": "No"})
+    ET.SubElement(coll, "TYPE").text = "Voucher"
+    ET.SubElement(coll, "FETCH").text = "Guid,Date,Vouchertypename,Vouchernumber"
+    ET.SubElement(coll, "NATIVEMETHOD").text = "GUID,DATE,VOUCHERTYPENAME,VOUCHERNUMBER"
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
 def company_collection_xml():
     """Export the loaded primary-company objects used by Tally's Company table."""
     root = ET.Element("ENVELOPE")
@@ -373,6 +392,10 @@ class Transport:
             if re.fullmatch(r"\d{8}", raw_date):
                 return dt.date(int(raw_date[0:4]), int(raw_date[4:6]), int(raw_date[6:8]))
         return None
+
+    def voucher_index(self, company, start, end):
+        root = self.tally(voucher_index_xml(company, start, end), 120)
+        return [{"guid": identity(v), "date": (v.findtext("DATE") or "").strip(), "type": (v.findtext("VOUCHERTYPENAME") or "").strip(), "number": (v.findtext("VOUCHERNUMBER") or "").strip()} for v in root.findall(".//COLLECTION/VOUCHER") if identity(v)]
 
     def trial_balance(self, company, start, end, timeout=240):
         return self.tally(trial_balance_xml(company, start, end), timeout)
@@ -672,7 +695,7 @@ class Connector:
             result += " " + self.balance_note
         return result
 
-    def push_vouchers(self, vouchers):
+    def push_vouchers(self, vouchers, force=()):
         """Send only new-or-changed vouchers to Commons, batched up to 200 per request
         instead of one HTTP round trip per voucher -- this is what makes a company with
         a large history sync in minutes instead of hours. A single oversized voucher is
@@ -694,7 +717,7 @@ class Connector:
                 continue
             value = hashlib.sha256(xml.encode()).hexdigest()
             prior = self.db.execute("SELECT digest FROM received WHERE scope=? AND guid=?", (self.scope, guid)).fetchone()
-            if not prior or prior[0] != value:
+            if not prior or prior[0] != value or guid in force:
                 to_send.append((guid, value, xml))
         count = 0
         chunks, current, size = [], [], 0
@@ -711,6 +734,41 @@ class Connector:
             self.db.commit()
             count += len(chunk)
         return count
+
+    def audit_vouchers(self, progress=None):
+        """Compare every voucher Tally has with what Commons has received and re-send whatever is
+        missing. Tally is only asked for a light index (GUID/date/type/number) a month at a time;
+        Commons answers which of those it has never received; only those are fetched in full."""
+        note = progress or (lambda *args: None)
+        since = self.transport.books_from(self.company)
+        if not since:
+            raise ValueError("Tally did not report when this company's books start.")
+        until = dt.date.today()
+        months, current = [], dt.date(since.year, since.month, 1)
+        while current <= until:
+            nxt = dt.date(current.year + (current.month == 12), current.month % 12 + 1, 1)
+            months.append((current, min(nxt - dt.timedelta(days=1), until)))
+            current = nxt
+        started, checked, missing = time.monotonic(), 0, []
+        for index, (first, last) in enumerate(months, 1):
+            items = self.transport.voucher_index(self.company, first, last)
+            for start in range(0, len(items), 500):
+                answer = self.call("voucher_index", items=items[start:start + 500])
+                missing.extend(answer.get("missing", []))
+            checked += len(items)
+            note("Checking vouchers against Commons (%d found, %d missing)" % (checked, len(missing)), index, len(months), (time.monotonic() - started) / index)
+        recovered, by_type = 0, {}
+        if missing:
+            wanted = {m["guid"] for m in missing}
+            days = sorted({m["date"] for m in missing if len(m["date"]) == 8})
+            for number, day in enumerate(days, 1):
+                iso = "%s-%s-%s" % (day[:4], day[4:6], day[6:])
+                found = [v for v in self.transport.vouchers(self.company, iso) if identity(v) in wanted]
+                recovered += self.push_vouchers(found, force=wanted)
+                note("Fetching the %d missing vouchers" % len(missing), number, len(days), (time.monotonic() - started) / max(1, len(months) + number))
+            for m in missing:
+                by_type[m["type"] or "?"] = by_type.get(m["type"] or "?", 0) + 1
+        return {"checked": checked, "missing": len(missing), "recovered": recovered, "by_type": by_type}
 
     def backfill(self, since=None, until=None, progress=None):
         """One-time catch-up of the company's entire Tally history (or a given range),
@@ -987,12 +1045,46 @@ def main():
                 events.put(("status","Tally balances could not be read: "+str(error)[:220]))
         balances_thread=threading.Thread(target=task,daemon=True)
         balances_thread.start()
+    audit_thread=None
+    def run_audit():
+        nonlocal audit_thread
+        if audit_thread and audit_thread.is_alive():
+            return
+        try:
+            name = company.get()
+            guid = companies.get(name)
+            if not guid or not re.fullmatch(r"[a-f0-9]{64}", token.get().strip()):
+                raise ValueError("Select a discovered company and paste a valid connection key.")
+        except Exception as error:
+            messagebox.showerror("Find missing vouchers",str(error))
+            return
+        token_value,port_value=token.get().strip(),int(port.get())
+        def task():
+            started=time.monotonic()
+            events.put(("status","Checking every voucher in Tally against Commons. Tally is only asked for a light list, month by month."))
+            events.put(("progress",(None,"Starting... "+eta_line(0,0,None,started))))
+            try:
+                job=Connector(Transport(token_value,port_value),name,guid,folder / (hashlib.sha256((name+guid).encode()).hexdigest()[:24]+".sqlite"))
+                def progress(label,done,total,per_unit):
+                    events.put(("progress",(done/total if total else None,label+": "+eta_line(done,total,per_unit,started))))
+                result=job.audit_vouchers(progress)
+                skipped=len(job.skipped)
+                job.db.close()
+                detail=", ".join("%s %d"%(k,v) for k,v in sorted(result["by_type"].items(),key=lambda x:-x[1])[:6])
+                events.put(("progress_done","Finished in "+eta_line(0,0,None,started).replace(" so far","")+"."))
+                events.put(("status","Checked %d vouchers: %d were missing from Commons%s; %d re-sent.%s Now import them in Commons." % (result["checked"],result["missing"]," ("+detail+")" if detail else "",result["recovered"]," %d oversized skipped."%skipped if skipped else "")))
+            except Exception as error:
+                events.put(("progress_done","Stopped."))
+                events.put(("status","Could not finish the voucher check: "+str(error)[:220]))
+        audit_thread=threading.Thread(target=task,daemon=True)
+        audit_thread.start()
     buttons=ttk.Frame(frame)
     buttons.pack(fill="x",pady=10)
     ttk.Button(buttons,text="Connect & start",command=connect).pack(side="left")
     ttk.Button(buttons,text="Pause",command=lambda:(stop.set(),status.set("Pausing after the current request finishes…"))).pack(side="left",padx=10)
     ttk.Button(buttons,text="Full sync now",command=run_backfill).pack(side="left",padx=10)
     ttk.Button(buttons,text="Read Tally balances",command=run_balances).pack(side="left",padx=10)
+    ttk.Button(buttons,text="Find missing vouchers",command=run_audit).pack(side="left",padx=10)
     ttk.Label(frame,text="\"Full sync now\" pulls this company's complete Tally history once (masters and every voucher back to books-start) — useful the first time a company is connected. The regular 30-second sync above only needs the last few days.",wraplength=690).pack(anchor="w",pady=4)
     ttk.Label(frame,text="Outgoing: approved accounting vouchers. Incoming: supported bills, purchases, receipts and stock details after review in Commons. Government filing and physical deletions are not automatic.",wraplength=690).pack(anchor="w",pady=8)
     loaded_settings=False

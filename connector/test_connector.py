@@ -30,6 +30,29 @@ class Tests(unittest.TestCase):
 
 
 
+
+    def test_audit_lists_light_index_asks_commons_and_resends_only_the_missing(self):
+        import datetime as dt
+        have={'g1','g3'}
+        index=[{'guid':'g%d'%n,'date':'20260315','type':'Payment','number':str(n)} for n in range(1,5)]
+        def voucher(guid): return ET.fromstring('<VOUCHER><GUID>%s</GUID><DATE>20260315</DATE><VOUCHERTYPENAME>Payment</VOUCHERTYPENAME></VOUCHER>'%guid)
+        self.fake.books_from=lambda company:dt.date.today().replace(day=1)
+        self.fake.voucher_index=lambda company,start,end:index
+        self.fake.vouchers=lambda company,start,end=None:[voucher('g%d'%n) for n in range(1,5)]
+        original_api=self.fake.api
+        def api(payload):
+            if payload['action']=='voucher_index':
+                self.fake.calls.append(payload)
+                return {'ok':True,'missing':[i for i in payload['items'] if i['guid'] not in have]}
+            return original_api(payload)
+        self.fake.api=api
+        result=self.connector.audit_vouchers()
+        self.assertEqual((result['checked'],result['missing'],result['recovered']),(4,2,2))
+        self.assertEqual(result['by_type'],{'Payment':2})
+        sent=[x for c in self.fake.calls if c['action']=='inbox_batch' for x in c['items']]
+        self.assertEqual(sorted(ET.fromstring(x).findtext('GUID') for x in sent),['g2','g4'])
+        # A forced re-send also works for a voucher the connector already believes it delivered.
+        self.assertEqual(self.connector.push_vouchers([voucher('g2')],force={'g2'}),1)
     def test_trial_balance_request_is_a_single_report_export(self):
         import datetime as dt
         from commons_connector import trial_balance_xml

@@ -101,3 +101,14 @@ test("a balances-only master update stores balances without blanking the ledger'
  assert.equal(row.top_group,"Current Liabilities");assert.equal(row.opening_paise,-25000);assert.equal(row.closing_paise,-40000);
  assert.equal(s.db.prepare("SELECT top_group d FROM tally_masters WHERE owner_user_id='company-one' AND kind='meta' AND name='books_from'").get().d,"2023-04-01");
 });
+
+test("voucher index reports only the Tally vouchers Commons has never received",async()=>{
+ const s=setup();await s.seed();
+ s.db.prepare("INSERT INTO tally_transfers VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run("t1","company-one","bridge-one","in","have-1","V1","<x/>","d","imported",null,1,1);
+ const r=await s.call({action:"voucher_index",items:[{guid:"have-1",date:"20260315",type:"Payment",number:"1"},{guid:"gone-2",date:"20260316",type:"Payment",number:"2"},{guid:"",date:"x"}]});
+ assert.equal(r.status,200);assert.equal(r.data.checked,2);
+ assert.deepEqual(Array.from(r.data.missing).map(m=>m.guid),["gone-2"]);
+ assert.equal(r.data.missing[0].type,"Payment");
+ const big=await s.call({action:"voucher_index",items:Array.from({length:501},(_,i)=>({guid:"g"+i}))});
+ assert.equal(big.status,400);
+});
