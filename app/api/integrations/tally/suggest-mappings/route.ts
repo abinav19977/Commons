@@ -21,7 +21,7 @@ export async function POST(request:Request){
   const allowed=accountOptions.map(([code,label])=>`${code}: ${label}`).join("; ");
   try{
     const response=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},signal:AbortSignal.timeout(20_000),body:JSON.stringify({
-      model:"gpt-5-mini",max_output_tokens:1800,
+      model:"gpt-5-mini",max_output_tokens:4000,reasoning:{effort:"low"},
       input:[{role:"system",content:"You are a conservative Indian accounting and TallyPrime ledger-mapping assistant. Suggest only from the allowed Commons accounts. A ledger name alone may be ambiguous: use low confidence and an empty accountCode when unsure, especially for personal or party names. Never infer customer versus supplier without evidence. Keep each reason plain and under 20 words. These are suggestions for human review, not postings."},{role:"user",content:`Allowed accounts: ${allowed}. Ledgers and voucher usage: ${JSON.stringify(parsed.data.ledgers)}`}],
       text:{format:{type:"json_schema",name:"tally_ledger_mappings",strict:true,schema:{type:"object",additionalProperties:false,properties:{suggestions:{type:"array",items:{type:"object",additionalProperties:false,properties:{name:{type:"string"},accountCode:{type:"string"},confidence:{type:"integer",minimum:0,maximum:100},reason:{type:"string"}},required:["name","accountCode","confidence","reason"]}}},required:["suggestions"]}}}
     })});

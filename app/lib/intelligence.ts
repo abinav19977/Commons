@@ -104,7 +104,7 @@ export async function generateBusinessIntelligence(metrics: {
       body: JSON.stringify({
         model: "gpt-5-mini",
         input: `You are an Indian small-business operations analyst. In one concise sentence, summarize these metrics and state the highest-priority action. Revenue paise: ${metrics.revenuePaise}; customers: ${metrics.customers}; products: ${metrics.products}; employees: ${metrics.employees}; invoices: ${metrics.invoices}; low-stock items: ${metrics.lowStock}; overdue customer accounts: ${metrics.overdueReceivables}; overdue receivables paise: ${metrics.overduePaise}; pending payroll records: ${metrics.pendingPayroll}; pending payroll paise: ${metrics.pendingPayrollPaise}; bank transactions requiring review: ${metrics.bankReview}. Do not invent facts.`,
-        max_output_tokens: 120,
+        max_output_tokens: 1000, reasoning: { effort: "low" },
       }),
     });
     if (!response.ok) return fallback;

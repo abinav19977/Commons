@@ -65,7 +65,7 @@ async function generateGstBrief(metrics: FilingMetrics, periodStart: string, per
       body: JSON.stringify({
         model: "gpt-5-mini",
         input: `Act as a conservative Indian GST filing review assistant. Analyse only the supplied books metrics for ${periodStart} to ${periodEnd}. Output a concise filing brief of at most 120 words. Optimise lawful compliance and potential eligible input tax credit, but never state that books GST is eligible ITC until reconciled with GSTR-2B. Do not invent due dates, exemptions, refunds, reverse-charge values or legal conclusions. Always advise verification on the GST portal and approval by a qualified tax professional. Metrics: ${JSON.stringify(metrics)}`,
-        max_output_tokens: 220,
+        max_output_tokens: 1200, reasoning: { effort: "low" },
       }),
     });
     if (!response.ok) return { mode: "analytical" as const, brief: fallback };
