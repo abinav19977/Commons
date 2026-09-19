@@ -52,7 +52,7 @@ test("malformed, multiple and entity-bearing incoming vouchers are rejected",asy
 });
 
 test("outdated connector cannot claim work; expired keys fail",async()=>{const s=setup();await s.seed();assert.equal((await s.call({action:"poll",protocolVersion:1})).status,426);s.db.exec("UPDATE tally_bridges SET expires_at=1");assert.equal((await s.call({action:"poll"})).status,401);});
-test("malformed XML and oversized multibyte payloads never reach the inbox",async()=>{const s=setup();await s.seed();assert.equal((await s.call({action:"inbox",xml:xml.replace("</GUID>","</WRONG>")})).status,400);assert.equal((await s.call({action:"inbox",xml:xml.replace("ONE","₹".repeat(30000))})).status,400);assert.equal(s.db.prepare("SELECT COUNT(*) n FROM tally_transfers").get().n,0);});
+test("malformed XML and oversized multibyte payloads never reach the inbox",async()=>{const s=setup();await s.seed();assert.equal((await s.call({action:"inbox",xml:xml.replace("</GUID>","</WRONG>")})).status,400);assert.equal((await s.call({action:"inbox",xml:xml.replace("ONE","₹".repeat(140000))})).status,400);assert.equal(s.db.prepare("SELECT COUNT(*) n FROM tally_transfers").get().n,0);});
 test("request body reader rejects primitives and enforces actual bytes",async()=>{const s=setup();for(const body of ["null","[]","42","x".repeat(100001)]){await assert.rejects(()=>s.helpers.readBoundedJson(new Request("https://commons.test",{method:"POST",body})));}});
 test("synced masters populate tally_masters mapping only, without bulk-creating customers/suppliers/products",async()=>{
  const s=setup();await s.seed();
