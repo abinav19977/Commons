@@ -29,6 +29,33 @@ class Fake:
 class Tests(unittest.TestCase):
 
 
+
+    def test_balances_send_openings_first_then_closings_in_small_batches(self):
+        import datetime as dt
+        names=['L%d'%n for n in range(60)]
+        seen=[]
+        def ledger_balances(company,start,end,tag,chunk=None,timeout=180):
+            seen.append((tag,len(chunk) if chunk else None))
+            return [ET.fromstring('<LEDGER NAME="%s"><%s>-100.50</%s></LEDGER>'%(n,tag,tag)) for n in (chunk or names)]
+        self.fake.books_from=lambda company:dt.date(2023,4,1);self.fake.ledger_balances=ledger_balances
+        steps=[]
+        result=self.connector.push_balances(lambda label,done,total,per:steps.append((done,total)))
+        self.assertEqual(result,{'openings':60,'closings':60})
+        self.assertEqual(seen[0],('OPENINGBALANCE',None))
+        self.assertTrue(all(tag=='CLOSINGBALANCE' and size<=25 for tag,size in seen[1:]))
+        masters=[c for c in self.fake.calls if c['action']=='masters']
+        self.assertEqual(masters[0]['ledgers'][0]['openingPaise'],-10050)
+        self.assertTrue(any('closingPaise' in l for c in masters for l in c['ledgers']))
+        self.assertEqual(steps[-1],(60,60))
+    def test_balances_keep_openings_when_tally_keeps_timing_out_on_closings(self):
+        import datetime as dt
+        def ledger_balances(company,start,end,tag,chunk=None,timeout=180):
+            if tag=='CLOSINGBALANCE': raise TimeoutError('timed out')
+            return [ET.fromstring('<LEDGER NAME="L%d"><OPENINGBALANCE>500</OPENINGBALANCE></LEDGER>'%n) for n in range(100)]
+        self.fake.books_from=lambda company:dt.date(2023,4,1);self.fake.ledger_balances=ledger_balances
+        with self.assertRaises(ValueError): self.connector.push_balances()
+        opening_calls=[c for c in self.fake.calls if c['action']=='masters' and 'openingPaise' in c['ledgers'][0]]
+        self.assertEqual(len(opening_calls),1)
     def test_slimming_removes_empty_padding_without_changing_meaning(self):
         # Tally pads vouchers with hundreds of empty tags; an invoice with many lines then
         # passed the old 64 KB limit and was silently skipped.

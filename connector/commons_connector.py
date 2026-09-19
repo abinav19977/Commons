@@ -11,6 +11,7 @@ import re
 import sqlite3
 import sys
 import threading
+import time
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
@@ -133,10 +134,11 @@ def masters_xml(kind, company=""):
     ET.SubElement(coll, "NATIVEMETHOD").text = native
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
-def ledger_balances_xml(company, start, end):
-    """Opening (at books-start) and closing (today) balance of every ledger. Kept as its own
-    request: Tally has to compute these over the whole period and answers one request at a
-    time, so bundling it with the quick masters call made connecting look frozen."""
+def ledger_balances_xml(company, start, end, tag, names=None):
+    """One balance field (OPENINGBALANCE or CLOSINGBALANCE) for every ledger, or just the given
+    ledger names. Tally computes these per ledger over the period and answers one request at a
+    time, so asking for all of them at once ran past the timeout on a large company; small named
+    batches keep each request short."""
     root = ET.Element("ENVELOPE")
     header = ET.SubElement(root, "HEADER")
     for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Collection"), ("ID", "CommonsLedgerBalances")]:
@@ -148,10 +150,15 @@ def ledger_balances_xml(company, start, end):
     ET.SubElement(variables, "SVFROMDATE").text = start.strftime("%Y%m%d")
     ET.SubElement(variables, "SVTODATE").text = end.strftime("%Y%m%d")
     message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
+    if names:
+        formula = " OR ".join('$Name = "%s"' % n for n in names)
+        ET.SubElement(message, "SYSTEM", {"TYPE": "Formulae", "NAME": "CommonsLedgerChunk", "ISMODIFY": "No", "ISFIXED": "No", "ISINTERNAL": "No"}).text = formula
     coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsLedgerBalances", "ISMODIFY": "No"})
     ET.SubElement(coll, "TYPE").text = "Ledger"
-    ET.SubElement(coll, "FETCH").text = "Name,Openingbalance,Closingbalance"
-    ET.SubElement(coll, "NATIVEMETHOD").text = "NAME,OPENINGBALANCE,CLOSINGBALANCE"
+    ET.SubElement(coll, "FETCH").text = "Name," + tag.title()
+    ET.SubElement(coll, "NATIVEMETHOD").text = "NAME," + tag
+    if names:
+        ET.SubElement(coll, "FILTER").text = "CommonsLedgerChunk"
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 def company_collection_xml():
@@ -306,9 +313,9 @@ class Transport:
         # Never pass local Tally data through an environment HTTP proxy.
         self.local = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
-    def tally(self, xml):
+    def tally(self, xml, timeout=180):
         request = urllib.request.Request(self.local_url, data=xml if isinstance(xml, bytes) else xml.encode("utf-8"), headers={"Content-Type": "text/xml; charset=utf-8"})
-        with self.local.open(request, timeout=180) as response:
+        with self.local.open(request, timeout=timeout) as response:
             data = response.read(MAX_XML + 1)
         if len(data) > MAX_XML:
             raise ValueError(f"Tally response exceeds {MAX_XML // 1_000_000} MB. Narrow the receiving period.")
@@ -356,8 +363,8 @@ class Transport:
                 return dt.date(int(raw_date[0:4]), int(raw_date[4:6]), int(raw_date[6:8]))
         return None
 
-    def ledger_balances(self, company, start, end):
-        return self.tally(ledger_balances_xml(company, start, end)).findall(".//LEDGER")
+    def ledger_balances(self, company, start, end, tag, names=None, timeout=180):
+        return self.tally(ledger_balances_xml(company, start, end, tag, names), timeout).findall(".//LEDGER")
 
     def masters(self, company):
         return {
@@ -593,31 +600,56 @@ class Connector:
         for i in range(0, len(stockitems), chunk):
             self.call("masters", ledgers=[], stockItems=stockitems[i:i + chunk])
 
-    def push_balances(self):
-        """Send each ledger's opening/closing balance so Commons can post Tally's opening
-        balances and show a ledger-by-ledger comparison."""
+    def push_balances(self, progress=None):
+        """Send each ledger's opening balance (one quick request, and all that is needed to post
+        Tally's opening entry) and then its closing balance in small batches (used to check
+        Commons against Tally). `progress(label, done, total, seconds_per_unit)` is called as it
+        goes so the caller can show a progress bar and an ETA."""
+        note = progress or (lambda *args: None)
         books_from = self.transport.books_from(self.company)
         if not books_from:
             raise ValueError("Tally did not report when this company's books start.")
-        nodes = self.transport.ledger_balances(self.company, books_from, dt.date.today())
-        rows = []
-        for node in nodes:
-            name = (node.attrib.get("NAME") or node.findtext("NAME") or "").strip()
+        today = dt.date.today()
+        def name_of(node):
+            return (node.attrib.get("NAME") or node.findtext("NAME") or "").strip()
+        note("Reading opening balances from Tally", 0, 0, None)
+        opening_nodes = self.transport.ledger_balances(self.company, books_from, books_from, "OPENINGBALANCE", None, 240)
+        rows, names = [], []
+        for node in opening_nodes:
+            name = name_of(node)
             if not name: continue
-            entry = {"name": name}
-            for key, tag in (("openingPaise", "OPENINGBALANCE"), ("closingPaise", "CLOSINGBALANCE")):
-                paise = balance_paise(node.findtext(tag))
-                if paise is not None: entry[key] = paise
-            if len(entry) > 1: rows.append(entry)
+            names.append(name)
+            paise = balance_paise(node.findtext("OPENINGBALANCE"))
+            rows.append({"name": name, **({"openingPaise": paise} if paise is not None else {})})
         for i in range(0, len(rows), 250):
             self.call("masters", ledgers=rows[i:i + 250], stockItems=[], booksFrom=books_from.isoformat())
-        return len(rows)
+        # Closing balances: names with a double quote can't go in a Tally filter formula, so skip them.
+        usable = [n for n in names if '"' not in n]
+        size, failed, sent, started = 25, 0, 0, time.monotonic()
+        for start in range(0, len(usable), size):
+            chunk = usable[start:start + size]
+            try:
+                nodes = self.transport.ledger_balances(self.company, books_from, today, "CLOSINGBALANCE", chunk, 150)
+                batch = []
+                for node in nodes:
+                    paise = balance_paise(node.findtext("CLOSINGBALANCE"))
+                    if paise is not None: batch.append({"name": name_of(node), "closingPaise": paise})
+                if batch: self.call("masters", ledgers=batch, stockItems=[], booksFrom=books_from.isoformat())
+                sent += len(batch); failed = 0
+            except Exception:
+                failed += 1
+                if failed >= 3:
+                    raise ValueError("Tally kept timing out on closing balances. The opening balances were sent; try the closing check later when Tally is idle.")
+            done = min(start + size, len(usable))
+            elapsed = time.monotonic() - started
+            note("Reading closing balances from Tally", done, len(usable), elapsed / done if done else None)
+        return {"openings": len(rows), "closings": sent}
 
     def _balances_job(self):
         self.balance_note = "Reading Tally balances (this can take a few minutes)…"
         try:
-            count = self.push_balances()
-            self.balance_note = "Tally balances sent for %d ledgers." % count
+            result = self.push_balances()
+            self.balance_note = "Tally balances sent for %d ledgers." % result["openings"]
         except Exception as error:
             self.balance_note = "Tally balances could not be read: %s" % str(error)[:160]
 
@@ -742,6 +774,17 @@ def set_start_with_windows(enabled):
             except FileNotFoundError:
                 pass
 
+def eta_line(done, total, seconds_per_unit, started):
+    """'123 of 500 - about 4 min left - 2 min 10 sec so far' for the progress line."""
+    elapsed = time.monotonic() - started
+    def span(seconds):
+        seconds = int(max(0, seconds))
+        return "under a minute" if seconds < 45 else ("about %d min" % round(seconds / 60) if seconds < 3600 else "about %dh %dmin" % (seconds // 3600, (seconds % 3600) // 60))
+    so_far = "%d sec" % elapsed if elapsed < 60 else "%d min %d sec" % (elapsed // 60, elapsed % 60)
+    if not total or not seconds_per_unit:
+        return "%s so far" % so_far
+    return "%d of %d  -  %s left  -  %s so far" % (done, total, span((total - done) * seconds_per_unit), so_far)
+
 def starts_with_windows():
     import winreg
     try:
@@ -838,7 +881,10 @@ def main():
             start_with_windows.set(not start_with_windows.get())
     ttk.Checkbutton(frame, text="Start automatically with Windows, minimized", variable=start_with_windows, command=on_start_with_windows_toggled).pack(anchor="w", pady=4)
     status = tk.StringVar(value="Find your company, paste the connection key, then connect.")
+    eta_text = tk.StringVar(value="")
     ttk.Label(frame, textvariable=status, wraplength=680).pack(anchor="w", pady=12)
+    bar = ttk.Progressbar(frame, mode="determinate", maximum=100, length=680)
+    ttk.Label(frame, textvariable=eta_text, wraplength=680).pack(anchor="w")
     def connect():
         nonlocal thread
         if thread and thread.is_alive():
@@ -892,14 +938,22 @@ def main():
             events.put(("status","Full sync started — pulling the company's entire Tally history. This can take a while for a large company; the daily sync above keeps working meanwhile."))
             try:
                 backfill_connector=Connector(Transport(token_value,port_value),name,guid,folder / (hashlib.sha256((name+guid).encode()).hexdigest()[:24]+".sqlite"))
+                began=dt.date.fromisoformat(start.get())
+                span_days=max(1,(dt.date.today()-began).days)
+                started_at=time.monotonic()
                 def progress(month_start,month_end,found,sent):
+                    fraction=max(0.0,min(1.0,(month_end-began).days/span_days))
+                    per_day=(time.monotonic()-started_at)/max(1,(month_end-began).days)
                     events.put(("status",f"Full sync: {month_start.isoformat()}..{month_end.isoformat()} — {found} vouchers found, {sent} sent to Commons."))
+                    events.put(("progress",(fraction,"Full sync: "+eta_line(int(fraction*100),100,(per_day*span_days)/100 if fraction else None,started_at).replace(" of 100"," %"))))
                 total=backfill_connector.backfill(progress=progress)
                 skipped=len(backfill_connector.skipped)
                 backfill_connector.db.close()
                 note=f" {skipped} oversized voucher(s) were skipped and need manual XML import." if skipped else ""
+                events.put(("progress_done","Full sync finished."))
                 events.put(("status",f"Full sync complete. {total} vouchers sent to Commons across the company's entire history.{note}"))
             except Exception as error:
+                events.put(("progress_done","Full sync stopped."))
                 events.put(("status","Full sync stopped: "+str(error)))
         backfill_thread=threading.Thread(target=task,daemon=True)
         backfill_thread.start()
@@ -922,14 +976,23 @@ def main():
             return
         token_value,port_value=token.get().strip(),int(port.get())
         def task():
-            events.put(("status","Reading Tally balances - this can take several minutes. Keep Tally open and leave it alone."))
+            started=time.monotonic()
+            events.put(("status","Reading Tally balances. Keep Tally open and leave it alone until this finishes."))
+            events.put(("progress",(None,"Reading opening balances from Tally... "+eta_line(0,0,None,started))))
             try:
                 job=Connector(Transport(token_value,port_value),name,guid,folder / (hashlib.sha256((name+guid).encode()).hexdigest()[:24]+".sqlite"))
-                count=job.push_balances()
+                def progress(label,done,total,per_unit):
+                    if total:
+                        events.put(("progress",(done/total,label+": "+eta_line(done,total,per_unit,started))))
+                    else:
+                        events.put(("progress",(None,label+"... "+eta_line(0,0,None,started))))
+                result=job.push_balances(progress)
                 job.db.close()
-                events.put(("status","Tally balances sent for %d ledgers. Now click Check against Tally in Commons." % count))
+                events.put(("progress_done","Finished in "+eta_line(0,0,None,started).replace(" so far","")+"."))
+                events.put(("status","Tally balances sent: %d opening and %d closing. Now click Check against Tally in Commons." % (result["openings"],result["closings"])))
             except Exception as error:
-                events.put(("status","Tally balances could not be read: "+str(error)[:200]))
+                events.put(("progress_done","Stopped after "+eta_line(0,0,None,started).replace(" so far","")+"."))
+                events.put(("status","Tally balances could not be read: "+str(error)[:220]))
         balances_thread=threading.Thread(target=task,daemon=True)
         balances_thread.start()
     buttons=ttk.Frame(frame)
@@ -960,6 +1023,19 @@ def main():
                 status.set("Companies found. Select the exact company paired in Commons.")
             elif kind=="books_from":
                 start.set(value)
+            elif kind=="progress":
+                fraction,text=value
+                if fraction is None:
+                    if str(bar.cget("mode"))!="indeterminate":
+                        bar.configure(mode="indeterminate");bar.pack(anchor="w",pady=(0,4));bar.start(14)
+                else:
+                    bar.stop();bar.configure(mode="determinate");bar["value"]=max(0,min(100,fraction*100))
+                    if not bar.winfo_ismapped():bar.pack(anchor="w",pady=(0,4))
+                eta_text.set(text)
+                if fraction is not None and fraction>=1:
+                    bar.stop()
+            elif kind=="progress_done":
+                bar.stop();bar.pack_forget();eta_text.set(value)
             else:status.set(value)
         window.after(300,update)
     if minimized_start and loaded_settings:
