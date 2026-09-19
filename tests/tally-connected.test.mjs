@@ -251,3 +251,24 @@ test("opening-balance entry always balances, keeps debtor/creditor parties, and 
  assert.equal(lopsided.balancingPaise,30000);
  assert.equal(lopsided.lines.reduce((t,l)=>t+l.debitPaise,0),lopsided.lines.reduce((t,l)=>t+l.creditPaise,0));
 });
+
+test("opening balances are derived from Tally's closing minus imported vouchers, and unexplained income/expense is flagged",()=>{
+ const s=setup();const {deriveOpenings}=s.load("app/lib/tally-reconcile.ts");
+ // Bank opened 1,000 Dr, vouchers moved 500 Dr, so Tally's closing is 1,500 Dr.
+ const masters=[
+  {name:"Bank",group:"Bank Accounts",opening:null,closing:-150000},
+  {name:"Sales",group:"Sales Accounts",opening:null,closing:80000},
+  {name:"Rent",group:"Indirect Expenses",opening:null,closing:-20000},
+  {name:"Loan",group:"Loans (Liability)",opening:null,closing:300000},
+  {name:"No balance",group:"Sundry Debtors",opening:null,closing:null}];
+ const vouchers=[{name:"Bank",amount:-50000},{name:"sales ",amount:50000},{name:"Rent",amount:-10000}];
+ const r=deriveOpenings(masters,vouchers);
+ const by=Object.fromEntries(r.masters.map(m=>[m.name,m.opening]));
+ assert.equal(by.Bank,-100000);           // 1,500 closing - 500 moved = 1,000 Dr opening
+ assert.equal(by.Sales,30000);            // an income ledger should be 0 here...
+ assert.equal(by.Rent,-10000);            // ...and so should an expense ledger
+ assert.equal(by.Loan,300000);            // no vouchers: the whole balance is opening
+ assert.equal(by["No balance"],null);     // nothing from Tally: left alone
+ assert.deepEqual(Array.from(r.unexplained.map(u=>u.name)).sort(),["Rent","Sales"]);
+ assert.equal(r.unexplainedTotal,40000);
+});

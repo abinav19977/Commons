@@ -134,32 +134,43 @@ def masters_xml(kind, company=""):
     ET.SubElement(coll, "NATIVEMETHOD").text = native
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
-def ledger_balances_xml(company, start, end, tag, names=None):
-    """One balance field (OPENINGBALANCE or CLOSINGBALANCE) for every ledger, or just the given
-    ledger names. Tally computes these per ledger over the period and answers one request at a
-    time, so asking for all of them at once ran past the timeout on a large company; small named
-    batches keep each request short."""
+def trial_balance_xml(company, start, end):
+    """Tally's own Trial Balance report for the books period. Tally computes this report in one
+    pass (it is what its Balance Sheet screen uses), so it answers in seconds; asking a Ledger
+    collection for per-ledger balances instead makes Tally recompute each ledger over the whole
+    period and timed out on a large company."""
     root = ET.Element("ENVELOPE")
     header = ET.SubElement(root, "HEADER")
-    for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Collection"), ("ID", "CommonsLedgerBalances")]:
+    for name, value in [("VERSION", "1"), ("TALLYREQUEST", "Export"), ("TYPE", "Data"), ("ID", "Trial Balance")]:
         ET.SubElement(header, name).text = value
     desc = ET.SubElement(ET.SubElement(root, "BODY"), "DESC")
     variables = ET.SubElement(desc, "STATICVARIABLES")
-    ET.SubElement(variables, "SVEXPORTFORMAT").text = "$$SysName:XML"
-    ET.SubElement(variables, "SVCURRENTCOMPANY").text = company
-    ET.SubElement(variables, "SVFROMDATE").text = start.strftime("%Y%m%d")
-    ET.SubElement(variables, "SVTODATE").text = end.strftime("%Y%m%d")
-    message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
-    if names:
-        formula = " OR ".join('$Name = "%s"' % n for n in names)
-        ET.SubElement(message, "SYSTEM", {"TYPE": "Formulae", "NAME": "CommonsLedgerChunk", "ISMODIFY": "No", "ISFIXED": "No", "ISINTERNAL": "No"}).text = formula
-    coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsLedgerBalances", "ISMODIFY": "No"})
-    ET.SubElement(coll, "TYPE").text = "Ledger"
-    ET.SubElement(coll, "FETCH").text = "Name," + tag.title()
-    ET.SubElement(coll, "NATIVEMETHOD").text = "NAME," + tag
-    if names:
-        ET.SubElement(coll, "FILTER").text = "CommonsLedgerChunk"
+    for tag, text in [("SVEXPORTFORMAT", "$$SysName:XML"), ("SVCURRENTCOMPANY", company), ("SVFROMDATE", start.strftime("%Y%m%d")), ("SVTODATE", end.strftime("%Y%m%d")), ("EXPLODEFLAG", "Yes")]:
+        ET.SubElement(variables, tag).text = text
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+def trial_balance_closings(root, ledger_names):
+    """{ledger name: closing balance in paise, credit-positive} from a Trial Balance export.
+    The export lists a DSPACCNAME row followed by its DSPACCINFO amounts; only names that are
+    real ledgers are kept (group subtotals share the same layout)."""
+    from decimal import Decimal, InvalidOperation
+    def amount(text):
+        try: return abs(Decimal((text or "").strip().replace(",", "").split()[0]))
+        except (InvalidOperation, IndexError): return Decimal(0)
+    wanted = set(ledger_names)
+    rows, current = {}, None
+    for element in root.iter():
+        tag = element.tag.upper()
+        if tag == "DSPACCNAME":
+            current = (element.findtext("DSPDISPNAME") or element.text or "").strip()
+        elif tag == "DSPACCINFO" and current in wanted:
+            debit = credit = Decimal(0)
+            for part in element.iter():
+                name = part.tag.upper()
+                if name == "DSPCLDRAMTA" and (part.text or "").strip(): debit = amount(part.text)
+                elif name == "DSPCLCRAMTA" and (part.text or "").strip(): credit = amount(part.text)
+            rows[current] = int((credit - debit) * 100)
+    return rows
 
 def company_collection_xml():
     """Export the loaded primary-company objects used by Tally's Company table."""
@@ -363,8 +374,8 @@ class Transport:
                 return dt.date(int(raw_date[0:4]), int(raw_date[4:6]), int(raw_date[6:8]))
         return None
 
-    def ledger_balances(self, company, start, end, tag, names=None, timeout=180):
-        return self.tally(ledger_balances_xml(company, start, end, tag, names), timeout).findall(".//LEDGER")
+    def trial_balance(self, company, start, end, timeout=240):
+        return self.tally(trial_balance_xml(company, start, end), timeout)
 
     def masters(self, company):
         return {
@@ -601,55 +612,36 @@ class Connector:
             self.call("masters", ledgers=[], stockItems=stockitems[i:i + chunk])
 
     def push_balances(self, progress=None):
-        """Send each ledger's opening balance (one quick request, and all that is needed to post
-        Tally's opening entry) and then its closing balance in small batches (used to check
-        Commons against Tally). `progress(label, done, total, seconds_per_unit)` is called as it
-        goes so the caller can show a progress bar and an ETA."""
+        """Send every ledger's closing balance from Tally's Trial Balance (one quick request).
+        Commons derives each opening balance from these (closing minus imported vouchers), so no
+        slow per-ledger opening-balance request is needed. `progress(label, done, total,
+        seconds_per_unit)` lets the window show what is happening."""
         note = progress or (lambda *args: None)
         books_from = self.transport.books_from(self.company)
         if not books_from:
             raise ValueError("Tally did not report when this company's books start.")
-        today = dt.date.today()
-        def name_of(node):
-            return (node.attrib.get("NAME") or node.findtext("NAME") or "").strip()
-        note("Reading opening balances from Tally", 0, 0, None)
-        opening_nodes = self.transport.ledger_balances(self.company, books_from, books_from, "OPENINGBALANCE", None, 240)
-        rows, names = [], []
-        for node in opening_nodes:
-            name = name_of(node)
-            if not name: continue
-            names.append(name)
-            paise = balance_paise(node.findtext("OPENINGBALANCE"))
-            rows.append({"name": name, **({"openingPaise": paise} if paise is not None else {})})
+        note("Reading ledger names", 0, 0, None)
+        ledger_nodes = self.transport.tally(masters_xml("Ledger", self.company), 90).findall(".//LEDGER")
+        names = [(n.attrib.get("NAME") or n.findtext("NAME") or "").strip() for n in ledger_nodes]
+        note("Asking Tally for its Trial Balance", 0, 0, None)
+        report = self.transport.trial_balance(self.company, books_from, dt.date.today())
+        closings = trial_balance_closings(report, [n for n in names if n])
+        if not closings:
+            seen = sorted({e.tag for e in report.iter()})[:14]
+            raise ValueError("Tally's Trial Balance had no ledger balances I could read (tags: %s)." % ", ".join(seen))
+        rows = [{"name": name, "closingPaise": paise} for name, paise in closings.items()]
+        started = time.monotonic()
         for i in range(0, len(rows), 250):
             self.call("masters", ledgers=rows[i:i + 250], stockItems=[], booksFrom=books_from.isoformat())
-        # Closing balances: names with a double quote can't go in a Tally filter formula, so skip them.
-        usable = [n for n in names if '"' not in n]
-        size, failed, sent, started = 25, 0, 0, time.monotonic()
-        for start in range(0, len(usable), size):
-            chunk = usable[start:start + size]
-            try:
-                nodes = self.transport.ledger_balances(self.company, books_from, today, "CLOSINGBALANCE", chunk, 150)
-                batch = []
-                for node in nodes:
-                    paise = balance_paise(node.findtext("CLOSINGBALANCE"))
-                    if paise is not None: batch.append({"name": name_of(node), "closingPaise": paise})
-                if batch: self.call("masters", ledgers=batch, stockItems=[], booksFrom=books_from.isoformat())
-                sent += len(batch); failed = 0
-            except Exception:
-                failed += 1
-                if failed >= 3:
-                    raise ValueError("Tally kept timing out on closing balances. The opening balances were sent; try the closing check later when Tally is idle.")
-            done = min(start + size, len(usable))
-            elapsed = time.monotonic() - started
-            note("Reading closing balances from Tally", done, len(usable), elapsed / done if done else None)
-        return {"openings": len(rows), "closings": sent}
+            done = min(i + 250, len(rows))
+            note("Sending balances to Commons", done, len(rows), (time.monotonic() - started) / done)
+        return {"ledgers": len(rows), "of": len([n for n in names if n])}
 
     def _balances_job(self):
         self.balance_note = "Reading Tally balances (this can take a few minutes)…"
         try:
             result = self.push_balances()
-            self.balance_note = "Tally balances sent for %d ledgers." % result["openings"]
+            self.balance_note = "Tally balances sent for %d ledgers." % result["ledgers"]
         except Exception as error:
             self.balance_note = "Tally balances could not be read: %s" % str(error)[:160]
 
@@ -989,7 +981,7 @@ def main():
                 result=job.push_balances(progress)
                 job.db.close()
                 events.put(("progress_done","Finished in "+eta_line(0,0,None,started).replace(" so far","")+"."))
-                events.put(("status","Tally balances sent: %d opening and %d closing. Now click Check against Tally in Commons." % (result["openings"],result["closings"])))
+                events.put(("status","Tally balances sent for %d of %d ledgers. Now click Check against Tally in Commons." % (result["ledgers"],result["of"])))
             except Exception as error:
                 events.put(("progress_done","Stopped after "+eta_line(0,0,None,started).replace(" so far","")+"."))
                 events.put(("status","Tally balances could not be read: "+str(error)[:220]))

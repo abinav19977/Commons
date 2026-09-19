@@ -30,32 +30,43 @@ class Tests(unittest.TestCase):
 
 
 
-    def test_balances_send_openings_first_then_closings_in_small_batches(self):
+    def test_trial_balance_request_is_a_single_report_export(self):
         import datetime as dt
-        names=['L%d'%n for n in range(60)]
-        seen=[]
-        def ledger_balances(company,start,end,tag,chunk=None,timeout=180):
-            seen.append((tag,len(chunk) if chunk else None))
-            return [ET.fromstring('<LEDGER NAME="%s"><%s>-100.50</%s></LEDGER>'%(n,tag,tag)) for n in (chunk or names)]
-        self.fake.books_from=lambda company:dt.date(2023,4,1);self.fake.ledger_balances=ledger_balances
+        from commons_connector import trial_balance_xml
+        root=ET.fromstring(trial_balance_xml("Co & Sons",dt.date(2023,4,1),dt.date(2026,9,19)))
+        self.assertEqual(root.findtext('.//TYPE'),'Data');self.assertEqual(root.findtext('.//ID'),'Trial Balance')
+        self.assertEqual(root.findtext('.//SVFROMDATE'),'20230401');self.assertEqual(root.findtext('.//SVCURRENTCOMPANY'),'Co & Sons')
+    def test_trial_balance_rows_become_credit_positive_closings_for_real_ledgers_only(self):
+        from commons_connector import trial_balance_closings
+        report=ET.fromstring('<ENVELOPE>'
+          '<DSPACCNAME><DSPDISPNAME>Capital Account</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA></DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA>1,880,031.55</DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO>'
+          '<DSPACCNAME><DSPDISPNAME>Bank</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>-1500.50</DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA></DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO>'
+          '<DSPACCNAME><DSPDISPNAME>Some Group Total</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>999</DSPCLDRAMTA></DSPCLDRAMT></DSPACCINFO></ENVELOPE>')
+        rows=trial_balance_closings(report,["Capital Account","Bank"])
+        self.assertEqual(rows,{"Capital Account":188003155,"Bank":-150050})
+    def test_balances_are_one_report_and_sent_in_chunks_with_progress(self):
+        import datetime as dt
+        names=['L%d'%n for n in range(300)]
+        def tally(xml,timeout=180):
+            raw=xml.decode() if isinstance(xml,bytes) else xml
+            if 'Trial Balance' in raw:
+                return ET.fromstring('<ENVELOPE>'+''.join('<DSPACCNAME><DSPDISPNAME>%s</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>10</DSPCLDRAMTA></DSPCLDRAMT></DSPACCINFO>'%n for n in names)+'</ENVELOPE>')
+            return ET.fromstring('<ENVELOPE>'+''.join('<LEDGER NAME="%s"/>'%n for n in names)+'</ENVELOPE>')
+        self.fake.tally=tally;self.fake.books_from=lambda company:dt.date(2023,4,1)
+        self.fake.trial_balance=lambda company,start,end,timeout=240:tally(b'Trial Balance')
         steps=[]
         result=self.connector.push_balances(lambda label,done,total,per:steps.append((done,total)))
-        self.assertEqual(result,{'openings':60,'closings':60})
-        self.assertEqual(seen[0],('OPENINGBALANCE',None))
-        self.assertTrue(all(tag=='CLOSINGBALANCE' and size<=25 for tag,size in seen[1:]))
+        self.assertEqual(result,{"ledgers":300,"of":300})
         masters=[c for c in self.fake.calls if c['action']=='masters']
-        self.assertEqual(masters[0]['ledgers'][0]['openingPaise'],-10050)
-        self.assertTrue(any('closingPaise' in l for c in masters for l in c['ledgers']))
-        self.assertEqual(steps[-1],(60,60))
-    def test_balances_keep_openings_when_tally_keeps_timing_out_on_closings(self):
+        self.assertEqual(len(masters),2);self.assertEqual(masters[0]['ledgers'][0],{"name":"L0","closingPaise":-1000})
+        self.assertEqual(steps[-1],(300,300))
+    def test_an_unreadable_trial_balance_says_what_tags_came_back(self):
         import datetime as dt
-        def ledger_balances(company,start,end,tag,chunk=None,timeout=180):
-            if tag=='CLOSINGBALANCE': raise TimeoutError('timed out')
-            return [ET.fromstring('<LEDGER NAME="L%d"><OPENINGBALANCE>500</OPENINGBALANCE></LEDGER>'%n) for n in range(100)]
-        self.fake.books_from=lambda company:dt.date(2023,4,1);self.fake.ledger_balances=ledger_balances
-        with self.assertRaises(ValueError): self.connector.push_balances()
-        opening_calls=[c for c in self.fake.calls if c['action']=='masters' and 'openingPaise' in c['ledgers'][0]]
-        self.assertEqual(len(opening_calls),1)
+        self.fake.books_from=lambda company:dt.date(2023,4,1)
+        self.fake.tally=lambda xml,timeout=180:ET.fromstring('<ENVELOPE><LEDGER NAME="A"/></ENVELOPE>')
+        self.fake.trial_balance=lambda company,start,end,timeout=240:ET.fromstring('<ENVELOPE><SOMETHING/></ENVELOPE>')
+        with self.assertRaises(ValueError) as caught: self.connector.push_balances()
+        self.assertIn("SOMETHING",str(caught.exception))
     def test_slimming_removes_empty_padding_without_changing_meaning(self):
         # Tally pads vouchers with hundreds of empty tags; an invoice with many lines then
         # passed the old 64 KB limit and was silently skipped.

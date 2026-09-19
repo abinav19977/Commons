@@ -58,3 +58,27 @@ export function openingEntry(
   if (balancingPaise) lines.push(balancingPaise > 0 ? { accountCode: "3100", accountName: "Opening balance equity", debitPaise: 0, creditPaise: balancingPaise } : { accountCode: "3100", accountName: "Opening balance equity", debitPaise: -balancingPaise, creditPaise: 0 });
   return { lines, ledgers, unmapped, balancingPaise };
 }
+
+// Groups whose ledgers start each financial year at zero (income and expense accounts).
+const PROFIT_AND_LOSS_GROUPS = new Set(["sales accounts", "purchase accounts", "direct incomes", "indirect incomes", "direct expenses", "indirect expenses"]);
+export const isProfitAndLoss = (group: string | null) => PROFIT_AND_LOSS_GROUPS.has((group || "").toLowerCase().trim());
+
+// Tally's closing balance already contains everything that ever happened to a ledger, so its opening
+// balance is whatever is left after taking off the vouchers Commons has imported:
+//   opening = closing - movement.
+// This needs no slow per-ledger opening-balance request to Tally and is exact by construction.
+// An income or expense ledger should come out at zero; a non-zero result means Tally has activity
+// Commons doesn't (typically vouchers still held back), so those are returned for the owner to see.
+export function deriveOpenings(masters: MasterLedger[], vouchers: VoucherLedger[]) {
+  const moved = new Map<string, number>();
+  for (const l of vouchers) moved.set(keyOf(l.name), (moved.get(keyOf(l.name)) || 0) + l.amount);
+  const unexplained: { name: string; amount: number }[] = [];
+  const derived = masters.map((m) => {
+    if (m.closing === null) return m;
+    const opening = m.closing - (moved.get(keyOf(m.name)) || 0);
+    if (opening !== 0 && isProfitAndLoss(m.group)) unexplained.push({ name: m.name, amount: opening });
+    return { ...m, opening };
+  });
+  unexplained.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+  return { masters: derived, unexplained, unexplainedTotal: unexplained.reduce((s, r) => s + Math.abs(r.amount), 0) };
+}

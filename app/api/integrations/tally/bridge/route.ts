@@ -7,7 +7,7 @@ import { tallyEnvelope } from "../../../../lib/tally";
 import { CORE_ACCOUNTS } from "../../../../lib/accounting";
 import { assertPeriodOpen,prepareJournal } from "../../../../lib/book-server";
 import { resolveMasterLedgerCode,TALLY_LEDGER_MAP } from "../../../../lib/tally";
-import { openingEntry,reconcileLedgers,type MasterLedger } from "../../../../lib/tally-reconcile";
+import { deriveOpenings,openingEntry,reconcileLedgers,type MasterLedger } from "../../../../lib/tally-reconcile";
 import { prepareConnectedImport } from "../../../../lib/tally-connected-import";
 import { GET as exportXml } from "../export/route";
 // The connector can deliver hundreds of historical vouchers into the queue in minutes
@@ -16,6 +16,15 @@ import { GET as exportXml } from "../export/route";
 // single request stays inside the Worker's CPU/subrequest budget.
 const IMPORT_QUEUE_BATCH = 25;
 const reply=(message:string,status=400)=>NextResponse.json({message},{status});
+// What each Tally ledger moved by in the vouchers Commons has imported (latest revision of each,
+// cancelled ones excluded). Only the ledgers array is pulled out of each stored document in SQL,
+// because the full payload carries the raw voucher XML.
+async function movedByLedger(raw:ReturnType<typeof getRawDb>,owner:string){
+ const docs=await raw.prepare("SELECT json_extract(d.payload,'$.ledgers') l FROM tally_documents d WHERE d.owner_user_id=? AND d.rowid=(SELECT MAX(x.rowid) FROM tally_documents x WHERE x.owner_user_id=d.owner_user_id AND x.guid=d.guid) AND COALESCE(json_extract(d.payload,'$.cancelled'),0)=0").bind(owner).all<{l:string|null}>();
+ const moved:{name:string;amount:number}[]=[];
+ for(const d of docs.results){try{for(const l of JSON.parse(d.l||"[]") as {name:string;amount:number}[])moved.push({name:l.name,amount:l.amount});}catch{}}
+ return {moved,vouchers:docs.results.length};
+}
 type MasterRow={name:string;top_group:string|null;opening_paise:number|null;closing_paise:number|null};
 async function loadBalances(raw:ReturnType<typeof getRawDb>,owner:string){
  const masters=await raw.prepare("SELECT name,top_group,opening_paise,closing_paise FROM tally_masters WHERE owner_user_id=? AND kind='ledger'").bind(owner).all<MasterRow>();
@@ -31,13 +40,13 @@ export async function GET(request:Request){
  if(new URL(request.url).searchParams.get("reconcile")){
   const {ledgers,booksFrom}=await loadBalances(raw,user.id);
   const withBalances=ledgers.filter(l=>l.closing!==null);
-  const docs=await raw.prepare("SELECT json_extract(d.payload,'$.ledgers') l FROM tally_documents d WHERE d.owner_user_id=? AND d.rowid=(SELECT MAX(x.rowid) FROM tally_documents x WHERE x.owner_user_id=d.owner_user_id AND x.guid=d.guid) AND COALESCE(json_extract(d.payload,'$.cancelled'),0)=0").bind(user.id).all<{l:string|null}>();
-  const moved:{name:string;amount:number}[]=[];
-  for(const d of docs.results){try{for(const l of JSON.parse(d.l||"[]") as {name:string;amount:number}[])moved.push({name:l.name,amount:l.amount});}catch{}}
+  const {moved,vouchers}=await movedByLedger(raw,user.id);
   const posted=await raw.prepare("SELECT id FROM journal_entries WHERE owner_user_id=? AND source_type='tally_opening' AND status='posted' ORDER BY created_at DESC LIMIT 1").bind(user.id).first();
-  const result=reconcileLedgers(ledgers,moved,!!posted);
-  const opening=openingEntry(ledgers,()=>({code:"3100",name:"Opening balance equity"}));
-  return NextResponse.json({booksFrom,hasBalances:withBalances.length,openingsPosted:!!posted,openingLedgers:opening.ledgers,checked:result.checked,matched:result.matched,differing:result.differing,totalAbsDifference:result.totalAbsDifference,rows:result.rows.slice(0,40),vouchers:docs.results.length});
+  // Opening = Tally's closing minus what the imported vouchers moved (see deriveOpenings).
+  const derived=deriveOpenings(ledgers,moved);
+  const result=reconcileLedgers(derived.masters,moved,!!posted);
+  const opening=openingEntry(derived.masters,()=>({code:"3100",name:"Opening balance equity"}));
+  return NextResponse.json({booksFrom,hasBalances:withBalances.length,openingsPosted:!!posted,openingLedgers:opening.ledgers,checked:result.checked,matched:result.matched,differing:result.differing,totalAbsDifference:result.totalAbsDifference,rows:result.rows.slice(0,40),vouchers,unexplained:derived.unexplained.slice(0,15),unexplainedCount:derived.unexplained.length,unexplainedTotal:derived.unexplainedTotal});
  }
  const id=new URL(request.url).searchParams.get("inbox");
  const documentId=new URL(request.url).searchParams.get("document");
@@ -87,8 +96,11 @@ async function handlePost(request:Request){
 
  if(body.action==="post_openings"){
   if(body.confirmation!=="POST TALLY OPENINGS")return reply("Confirm the opening balances first.");
-  const {ledgers,booksFrom,saved}=await loadBalances(raw,user.id);
-  if(!booksFrom||!ledgers.some(l=>l.opening!==null))return reply("Tally's balances have not arrived yet. Open the connector and click Connect & start, then try again.",409);
+  const loaded=await loadBalances(raw,user.id);
+  const {booksFrom,saved}=loaded;
+  if(!booksFrom||!loaded.ledgers.some(l=>l.closing!==null))return reply("Tally's balances have not arrived yet. In the connector click Read Tally balances, wait for it to finish, then try again.",409);
+  const derived=deriveOpenings(loaded.ledgers,(await movedByLedger(raw,user.id)).moved);
+  const ledgers=derived.masters;
   const customers=await raw.prepare("SELECT id,display_name name FROM customers WHERE owner_user_id=?").bind(user.id).all<{id:string;name:string}>();
   const suppliers=await raw.prepare("SELECT id,name FROM suppliers WHERE owner_user_id=?").bind(user.id).all<{id:string;name:string}>();
   const partyIds=new Map<string,string>();
@@ -122,7 +134,7 @@ async function handlePost(request:Request){
   const journal=await prepareJournal({ownerUserId:user.id,actor:user.email,entryDate:booksFrom,sourceType:"tally_opening",sourceId,description:"Opening balances from Tally",lines:plan.lines});
   statements.push(...journal.statements);
   for(let i=0;i<statements.length;i+=100)await raw.batch(statements.slice(i,i+100));
-  return NextResponse.json({message:`Opening balances from Tally posted for ${plan.ledgers} ledgers, dated ${booksFrom}.${plan.unmapped.length?` ${plan.unmapped.length} had no account and went to Opening balance equity.`:""}`,ledgers:plan.ledgers,unmapped:plan.unmapped.slice(0,20),balancingPaise:plan.balancingPaise});
+  return NextResponse.json({message:`Opening balances from Tally posted for ${plan.ledgers} ledgers, dated ${booksFrom}.${plan.unmapped.length?` ${plan.unmapped.length} had no account and went to Opening balance equity.`:""}${derived.unexplained.length?` ${derived.unexplained.length} income or expense ledger${derived.unexplained.length===1?"":"s"} carried a balance Commons has no vouchers for (likely held-back vouchers), so it is included in the opening.`:""}`,ledgers:plan.ledgers,unmapped:plan.unmapped.slice(0,20),balancingPaise:plan.balancingPaise,unexplained:derived.unexplained.slice(0,15)});
  }
  if(body.action==="import_queue"){
   if(body.confirmation!=="IMPORT TALLY")return reply("Confirm the import first.");
