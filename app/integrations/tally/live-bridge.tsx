@@ -1,9 +1,10 @@
 "use client";
-import { useEffect,useState } from "react";
+import { useEffect,useRef,useState } from "react";
 import { companyFetch } from "@/app/company-fetch";
 import { todayIST } from "@/app/lib/date";
 import { CORE_ACCOUNTS } from "@/app/lib/accounting";
 import DocumentHistory from "./document-history";
+import ProgressWindow,{type TransferJob} from "./progress-window";
 type Transfer={id:string;direction:string;label:string;status:string;message:string|null;updated_at:number};
 type Recon={booksFrom:string|null;hasBalances:number;openingsPosted:boolean;openingLedgers:number;checked:number;matched:number;differing:number;totalAbsDifference:number;rows:{name:string;group:string|null;tally:number;commons:number;diff:number}[];vouchers:number};
 type State={bridge:null|{tally_name:string;tally_guid:string|null;last_seen:number|null;revoked:number;expires_at:number};transfers:Transfer[];documents?:{id:string;kind:string;created_at:number;revision:string}[];queued?:number;unmapped?:{name:string;count:number}[]};
@@ -16,19 +17,27 @@ export default function LiveBridge({onReview}:{onReview:(xml:string,name:string)
  async function act(action:string,extra:Record<string,unknown>={}){setBusy(true);setMessage("");try{const response=await companyFetch("/api/integrations/tally/bridge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action,name,from,to,...extra})});const body=await response.json();if(!response.ok)throw Error(body.message);if(body.token)setToken(body.token);if(body.vouchers)setPreview(body.vouchers);else setMessage(body.message||"Saved.");if(action==="queue")setPreview(null);await refresh();}catch(e){setMessage(e instanceof Error?e.message:"Request failed.");}finally{setBusy(false);}}
  async function review(item:Transfer){try{const response=await companyFetch(`/api/integrations/tally/bridge?inbox=${encodeURIComponent(item.id)}`);const body=await response.json();if(!response.ok)throw Error(body.message);onReview(body.xml,`Tally · ${item.label}`);}catch(e){setMessage(e instanceof Error?e.message:"Could not open voucher.");}}
  const queued=data.queued||0;
+ const [job,setJob]=useState<TransferJob|null>(null);const stopRef=useRef(false);
+ useEffect(()=>{if(!job||job.finished)return;const t=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(t);},[job]);
  async function importQueue(){
-  setBusy(true);setMessage("Importing queued vouchers…");
-  let imported=0,duplicates=0,needsMapping=0;
+  stopRef.current=false;setBusy(true);setMessage("");
+  const startedAt=Date.now();
+  let imported=0,duplicates=0,needsMapping=0,total=queued;
+  setJob({title:"Importing vouchers from Tally",total,done:0,imported:0,held:0,already:0,startedAt,finished:false,stopping:false});
+  let error="";
   try{
    for(;;){
     const response=await companyFetch("/api/integrations/tally/bridge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"import_queue",confirmation:"IMPORT TALLY"})});
     const body=await response.json();if(!response.ok)throw Error(body.message);
     imported+=body.imported;duplicates+=body.duplicates;needsMapping+=body.needsMapping;
-    setMessage(`Imported ${imported} so far · ${body.remaining} left in the queue…`);
-    if(body.remaining===0)break;
+    const done=imported+duplicates+needsMapping;
+    total=Math.max(total,done+body.remaining);
+    setJob(j=>j?{...j,total,done,imported,already:duplicates,held:needsMapping,stopping:stopRef.current}:j);
+    if(body.remaining===0||stopRef.current)break;
    }
    setMessage(`${imported} voucher${imported===1?"":"s"} imported, ${duplicates} already up to date, ${needsMapping} need manual review (use "Review voucher" below).`);
-  }catch(e){setMessage(e instanceof Error?e.message:"Import failed.");}
+  }catch(e){error=e instanceof Error?e.message:"Import failed.";setMessage(error);}
+  setJob(j=>j?{...j,finished:true,stopping:false,error:error||undefined}:j);
   await refresh();setBusy(false);
  }
  const [mapChoice,setMapChoice]=useState<Record<string,string>>({});
@@ -85,5 +94,6 @@ export default function LiveBridge({onReview}:{onReview:(xml:string,name:string)
  {queued>0&&<div className="bridge-review"><p>{queued} voucher{queued===1?"":"s"} received from Tally and waiting to be posted to Business and Accounting.</p><button disabled={busy} onClick={importQueue}>Import all queued vouchers</button></div>}
  {!data.transfers.length&&<p>No transfers yet.</p>}{data.transfers.map(item=><article className="bridge-transfer" key={item.id}><div><strong>{item.direction==="in"?"From Tally":"To Tally"} · {item.label}</strong><p>{item.status==="uncertain"?"Delivery uncertain":item.status}{item.message?` · ${item.message}`:""}</p></div>{item.direction==="in"&&(item.status==="review"||item.status==="needs_mapping")&&<button disabled={busy} onClick={()=>review(item)}>Review voucher</button>}{item.direction==="out"&&["sending","uncertain"].includes(item.status)&&<button disabled={busy} onClick={()=>act("reconcile",{transfer:item.id})}>Check delivery</button>}{item.status==="blocked"&&<button disabled={busy} onClick={()=>act("retry",{transfer:item.id})}>Retry after fixing</button>}</article>)}
  <DocumentHistory documents={data.documents||[]}/>
+ {job&&<ProgressWindow job={job} now={now} onStop={()=>{stopRef.current=true;setJob(j=>j?{...j,stopping:true}:j);}} onClose={()=>setJob(null)}/>}
  </section>;
 }

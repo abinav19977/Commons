@@ -3580,3 +3580,12 @@ input:focus,select:focus,textarea:focus { border-color:#bdbdbd!important;outline
   body::after{right:-58vw;top:-15vw;width:110vw;opacity:.45}.workspace-shell::before,.form-shell::before{display:none}
   .workspace-header::after,.company-context::after{display:none}.tool-tile:hover,.tool-tile:focus-visible,.accounting-card:hover,.accounting-card:focus-visible{transform:none}
 }
+
+/* Transfer progress window (Live sync): fixed card with bar, ETA and live counts. */
+.progress-window { position: fixed; right: 20px; bottom: 20px; z-index: 60; width: min(380px, calc(100vw - 32px)); background: #050505; border: 1px solid #6d4fc2; border-radius: 14px; padding: 18px; box-shadow: 0 12px 40px rgba(0,0,0,.7); }
+.progress-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; color: #fff; }
+.progress-track { height: 10px; background: #1a1a1a; border-radius: 999px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, #7c4dff, #b794f6); border-radius: 999px; transition: width .5s ease; }
+.progress-line { margin-top: 10px; color: #d8d8d8; font-size: 14px; }
+.progress-counts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0; color: #b794f6; font-size: 13px; }
+.progress-window button { cursor: pointer; background: #111; color: #fff; border: 1px solid #555; border-radius: 8px; padding: 8px 12px; font-size: 13px; }

@@ -133,6 +133,20 @@ test("every core account lands in a report total, so assets = liabilities + equi
  for(const [code,field] of [["1420","assets"],["1430","assets"],["1600","assets"],["2320","liabilities"],["2330","liabilities"],["2400","liabilities"]])assert.equal(reportFromBalances({[code]:500})[field],500,code);
 });
 
+test("transfer progress window shows percent, an ETA from the whole run, live counts and a stop control",async()=>{
+ const {default:ProgressWindow,progressStats,durationText}=await vite.ssrLoadModule("/app/integrations/tally/progress-window.tsx");
+ const {createElement}=await import("react"),{renderToStaticMarkup}=await import("react-dom/server");
+ const started=1_000_000,job={title:"Importing vouchers from Tally",total:200,done:50,imported:40,held:5,already:5,startedAt:started,finished:false,stopping:false};
+ const stats=progressStats(job,started+100_000);
+ assert.equal(stats.percent,25);assert.equal(stats.perSecond,0.5);assert.equal(stats.eta,300);
+ assert.equal(durationText(300),"about 5 min");assert.equal(durationText(20),"under a minute");assert.equal(durationText(NaN),"calculating…");
+ assert.ok(Number.isNaN(progressStats({...job,done:0},started+1000).eta),"no estimate before anything is measured");
+ const html=renderToStaticMarkup(createElement(ProgressWindow,{job,now:started+100_000,onStop(){},onClose(){}}));
+ for(const text of ["25%","50","of 200","about 5 min left","40 imported","5 held for review","Stop after this batch"])assert.ok(html.includes(text),text);
+ const done=renderToStaticMarkup(createElement(ProgressWindow,{job:{...job,done:200,finished:true},now:started+100_000,onStop(){},onClose(){}}));
+ assert.ok(done.includes("100%")&&done.includes("Done")&&done.includes("Close")&&!done.includes("Stop after this batch"));
+});
+
 test("bookkeeping rejects unsafe precision, negative values and two-sided lines",async()=>{
  const {isBalanced}=await vite.ssrLoadModule("/app/lib/accounting.ts");
  for(const amount of [Infinity,NaN,0.1,Number.MAX_SAFE_INTEGER+1,-1])assert.equal(isBalanced([{debitPaise:amount,creditPaise:0},{debitPaise:0,creditPaise:amount}]),false);
