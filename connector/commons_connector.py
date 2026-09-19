@@ -239,6 +239,24 @@ def describe_difference(sent, stored):
     if sent[3] != stored[3]: parts.append("stock items differ")
     return "; ".join(parts)[:600] or "unknown difference"
 
+MAX_VOUCHER_BYTES = 400_000
+
+def slim_voucher_xml(voucher):
+    """Serialise a voucher without Tally's empty padding. TallyPrime pads every voucher with
+    hundreds of empty tags (a single-item voucher is ~27 KB), so an invoice with many lines
+    passed the old 64 KB limit and was silently skipped. Empty elements carry no data --
+    Commons reads a missing tag and an empty one identically -- so dropping them is lossless."""
+    def prune(node):
+        node.text = (node.text or "").strip() or None
+        for child in list(node):
+            prune(child)
+            child.tail = None
+            if len(child) == 0 and not (child.text or "").strip():
+                node.remove(child)
+    copy = ET.fromstring(ET.tostring(voucher, encoding="unicode"))
+    prune(copy)
+    return ET.tostring(copy, encoding="unicode")
+
 class Transport:
     def __init__(self, token, port=9000):
         if not 1024 <= int(port) <= 65535:
@@ -566,15 +584,26 @@ class Connector:
                 raise ValueError("Incoming voucher has no stable GUID. Receive stopped for review.")
             xml = ET.tostring(voucher, encoding="unicode")
             if len(xml.encode("utf-8")) > 64000:
-                self.skipped.append((guid, "Exceeds 64 KB. Use manual XML import for this voucher."))
+                # Vouchers under the old limit keep their exact original text (and digest) so
+                # nothing already received looks "changed"; only the ones that used to be
+                # skipped are shrunk.
+                xml = slim_voucher_xml(voucher)
+            if len(xml.encode("utf-8")) > MAX_VOUCHER_BYTES:
+                self.skipped.append((guid, "Exceeds %d KB even after removing empty fields. Use manual XML import for this voucher." % (MAX_VOUCHER_BYTES // 1000)))
                 continue
             value = hashlib.sha256(xml.encode()).hexdigest()
             prior = self.db.execute("SELECT digest FROM received WHERE scope=? AND guid=?", (self.scope, guid)).fetchone()
             if not prior or prior[0] != value:
                 to_send.append((guid, value, xml))
         count = 0
-        for start in range(0, len(to_send), 100):
-            chunk = to_send[start:start + 100]
+        chunks, current, size = [], [], 0
+        for item in to_send:
+            item_size = len(item[2].encode("utf-8"))
+            if current and (len(current) >= 100 or size + item_size > 4_000_000):
+                chunks.append(current); current, size = [], 0
+            current.append(item); size += item_size
+        if current: chunks.append(current)
+        for chunk in chunks:
             self.call("inbox_batch", items=[item[2] for item in chunk])
             for guid, value, _ in chunk:
                 self.db.execute("INSERT OR REPLACE INTO received VALUES (?,?,?)", (self.scope, guid, value))

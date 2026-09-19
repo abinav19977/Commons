@@ -6,7 +6,7 @@ const reply=(message:string,status=400)=>NextResponse.json({message},{status});
 // Shared by the single-voucher "inbox" action and the bulk "inbox_batch" action used
 // for one-time historical catch-up, so both paths dedupe/revision-check identically.
 async function receiveVoucher(raw:ReturnType<typeof getRawDb>,bridge:Bridge,xml:unknown):Promise<string>{
- if(typeof xml!=="string"||new TextEncoder().encode(xml).length>64000||/<!DOCTYPE|<!ENTITY/i.test(xml))return "invalid: Invalid voucher XML.";
+ if(typeof xml!=="string"||new TextEncoder().encode(xml).length>400_000||/<!DOCTYPE|<!ENTITY/i.test(xml))return "invalid: Invalid voucher XML.";
  const blocks=voucherBlocks(xml);if(blocks.length!==1)return "invalid: Send one voucher at a time.";
  let node;try{const parsed=descendants(parseXml(xml),"VOUCHER");if(parsed.length!==1)throw Error("Expected one voucher.");node=parsed[0];}catch{return "invalid: Malformed voucher XML.";}
  const key=value(node,"GUID");if(!key||key.length>160)return "invalid: A stable Tally voucher GUID is required.";
@@ -83,7 +83,7 @@ export async function POST(request:Request){
   const parsedItems:{xml:string;key:string;number:string}[]=[];
   let invalid=0;
   for(const xml of items){
-   if(typeof xml!=="string"||new TextEncoder().encode(xml).length>64000||/<!DOCTYPE|<!ENTITY/i.test(xml)){invalid++;continue;}
+   if(typeof xml!=="string"||new TextEncoder().encode(xml).length>400_000||/<!DOCTYPE|<!ENTITY/i.test(xml)){invalid++;continue;}
    if(voucherBlocks(xml).length!==1){invalid++;continue;}
    let node;try{const nodes=descendants(parseXml(xml),"VOUCHER");if(nodes.length!==1)throw Error();node=nodes[0];}catch{invalid++;continue;}
    const key=value(node,"GUID");if(!key||key.length>160){invalid++;continue;}

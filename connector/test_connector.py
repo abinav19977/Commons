@@ -2,7 +2,7 @@ import hashlib
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
-from commons_connector import Connector, Transport, parse_xml, collection_xml, company_collection_xml, company_rows, signature, NoRedirect
+from commons_connector import slim_voucher_xml, Connector, Transport, parse_xml, collection_xml, company_collection_xml, company_rows, signature, NoRedirect
 
 VOUCHER='<VOUCHER><GUID>voucher-1</GUID><DATE>20260909</DATE><VOUCHERTYPENAME>Journal</VOUCHERTYPENAME><VOUCHERNUMBER>JV-1</VOUCHERNUMBER><ALLLEDGERENTRIES.LIST><LEDGERNAME>Cash</LEDGERNAME><AMOUNT>-100.00</AMOUNT></ALLLEDGERENTRIES.LIST><ALLLEDGERENTRIES.LIST><LEDGERNAME>Sales</LEDGERNAME><AMOUNT>100.00</AMOUNT></ALLLEDGERENTRIES.LIST></VOUCHER>'
 XML='<ENVELOPE><SVCURRENTCOMPANY>My business</SVCURRENTCOMPANY>'+VOUCHER+'</ENVELOPE>'
@@ -28,6 +28,15 @@ class Fake:
 
 class Tests(unittest.TestCase):
 
+
+    def test_slimming_removes_empty_padding_without_changing_meaning(self):
+        # Tally pads vouchers with hundreds of empty tags; an invoice with many lines then
+        # passed the old 64 KB limit and was silently skipped.
+        padded = VOUCHER.replace('</VOUCHER>', ''.join('<PAD%d />' % n for n in range(3000)) + '<ALLLEDGERENTRIES.LIST>   </ALLLEDGERENTRIES.LIST></VOUCHER>')
+        original = ET.fromstring(padded)
+        slim = slim_voucher_xml(original)
+        self.assertLess(len(slim), len(padded) / 2)
+        self.assertEqual(signature(ET.fromstring(slim)), signature(ET.fromstring(VOUCHER)))
     def test_prefixed_tags_without_namespace_declaration_parse(self):
         # Confirmed on a real company's history pull: UDF: tags with no xmlns in scope made
         # the whole Full sync stop with "unbound prefix".
