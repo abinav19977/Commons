@@ -90,11 +90,19 @@ export async function POST(request:Request){
    parsedItems.push({xml,key,number:value(node,"VOUCHERNUMBER")||key});
   }
   if(!parsedItems.length)return NextResponse.json({ok:true,created:0,updated:0,ignored:0,invalid});
-  const keys=parsedItems.map(p=>p.key);const placeholders=keys.map(()=>"?").join(",");
-  const ownRows=await raw.prepare(`SELECT id FROM journal_entries WHERE owner_user_id=? AND source_type!='tally_import' AND id IN (${placeholders})`).bind(bridge.owner_user_id,...keys).all<{id:string}>();
-  const ownSet=new Set(ownRows.results.map(r=>r.id));
-  const priorRows=await raw.prepare(`SELECT id,source_key,digest FROM tally_transfers WHERE bridge_id=? AND direction='in' AND source_key IN (${placeholders})`).bind(bridge.id,...keys).all<{id:string;source_key:string;digest:string}>();
-  const priorByKey=new Map(priorRows.results.map(r=>[r.source_key,r]));
+  const keys=parsedItems.map(p=>p.key);
+  // D1 rejects any statement binding more than 100 values ("too many SQL variables"), and a
+  // 100-voucher batch plus its owner/bridge id is 101 -- so look keys up in slices.
+  const ownSet=new Set<string>(),priorByKey=new Map<string,{id:string;source_key:string;digest:string}>();
+  for(let i=0;i<keys.length;i+=80){
+   const slice=keys.slice(i,i+80),placeholders=slice.map(()=>"?").join(",");
+   const [ownRows,priorRows]=await Promise.all([
+    raw.prepare(`SELECT id FROM journal_entries WHERE owner_user_id=? AND source_type!='tally_import' AND id IN (${placeholders})`).bind(bridge.owner_user_id,...slice).all<{id:string}>(),
+    raw.prepare(`SELECT id,source_key,digest FROM tally_transfers WHERE bridge_id=? AND direction='in' AND source_key IN (${placeholders})`).bind(bridge.id,...slice).all<{id:string;source_key:string;digest:string}>(),
+   ]);
+   for(const r of ownRows.results)ownSet.add(r.id);
+   for(const r of priorRows.results)priorByKey.set(r.source_key,r);
+  }
   const hashes=await Promise.all(parsedItems.map(p=>digest(p.xml)));
   // The same GUID can legitimately repeat within one batch (e.g. a voucher altered
   // twice in Tally before this sync ran). Collapse to each key's latest occurrence for
