@@ -38,8 +38,8 @@ export async function prepareConnectedImport(owner:string,actor:string,xml:strin
   if(matched.length>1)issues.push("Multiple parties share the Tally ledger name; resolve the mapping first.");
   partyId=matched[0]?.id||"tp-"+(await digest(owner+":"+(customerKind?"customer":"supplier")+":"+partyName)).slice(0,40);
   if(!matched.length&&partyName){
-   if(customerKind)statements.push(raw.prepare("INSERT INTO customers(id,owner_user_id,display_name,primary_phone,gstin,gst_registration_type,place_of_supply,billing_address_line_1,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(partyId,owner,partyName,"",doc.gstin||null,doc.gstin?"regular":"unregistered",doc.placeOfSupply||null,doc.address||null,now,now));
-   else statements.push(raw.prepare("INSERT INTO suppliers(id,owner_user_id,name,primary_phone,gstin,gst_registration_type,address_line_1,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(partyId,owner,partyName,"",doc.gstin||null,doc.gstin?"regular":"unregistered",doc.address||null,now,now));
+   if(customerKind)statements.push(raw.prepare("INSERT OR IGNORE INTO customers(id,owner_user_id,display_name,primary_phone,gstin,gst_registration_type,place_of_supply,billing_address_line_1,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(partyId,owner,partyName,"",doc.gstin||null,doc.gstin?"regular":"unregistered",doc.placeOfSupply||null,doc.address||null,now,now));
+   else statements.push(raw.prepare("INSERT OR IGNORE INTO suppliers(id,owner_user_id,name,primary_phone,gstin,gst_registration_type,address_line_1,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(partyId,owner,partyName,"",doc.gstin||null,doc.gstin?"regular":"unregistered",doc.address||null,now,now));
   }
  }
  const ledgerXml=xml;
@@ -115,7 +115,7 @@ export async function prepareConnectedImport(owner:string,actor:string,xml:strin
   const rate=qty?Math.round(amount*1000/qty):0;
   // Prefer Tally's own stock-item master (unit/GST rate/cost) over a guess when Commons
   // has never seen this product before — it is the same source of truth Tally itself uses.
-  if(!matches.length&&!itemRows.some(r=>r.productId===productId))statements.push(raw.prepare("INSERT INTO products(id,owner_user_id,name,unit,hsn_sac,purchase_price_paise,sale_price_paise,gst_rate_basis_points,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(productId,owner,item.name,master?.unit||item.unit,item.hsn||null,purchase?rate:(master?.costPaise||0),sale?rate:0,master?.gstRate||0,now,now));
+  if(!matches.length&&!itemRows.some(r=>r.productId===productId))statements.push(raw.prepare("INSERT OR IGNORE INTO products(id,owner_user_id,name,unit,hsn_sac,purchase_price_paise,sale_price_paise,gst_rate_basis_points,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(productId,owner,item.name,master?.unit||item.unit,item.hsn||null,purchase?rate:(master?.costPaise||0),sale?rate:0,master?.gstRate||0,now,now));
   if(item.batches.length&&item.batches.reduce((sum,b)=>sum+Math.abs(b.milli),0)!==qty)issues.push("Batch quantities do not equal the item quantity for "+item.name);
   const masterRate=item.rates.length?null:master?.gstRate??null;
   const gstRate=item.rates.length?item.rates.filter(r=>!r.head.toLowerCase().includes("cess")).reduce((sum,r)=>sum+r.basisPoints,0):(masterRate||0);

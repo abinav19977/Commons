@@ -160,3 +160,17 @@ test("a sales ledger literally named with 'IGST' in it (e.g. IGST Sales 18%) is 
  assert.equal(s.db.prepare("SELECT igst_paise FROM invoices").get().igst_paise,1800);
  assert.equal(s.db.prepare("SELECT SUM(debit_paise-credit_paise) n FROM journal_lines").get().n,0);
 });
+
+test("two vouchers for the same brand-new party import together in one batch (bulk import)",async()=>{
+ const s=setup();
+ // The bulk importer prepares 25 vouchers before executing any of them, so both see no
+ // existing customer/product and both try to create it -- that used to abort the whole
+ // batch with a customers.id primary-key violation.
+ const a=await s.engine.prepareConnectedImport("company-one","accountant",invoice({guid:"bulk-a"}));
+ const b=await s.engine.prepareConnectedImport("company-one","accountant",invoice({guid:"bulk-b"}));
+ assert.deepEqual(Array.from(a.issues),[]);assert.deepEqual(Array.from(b.issues),[]);
+ await s.raw.batch([...a.statements,...b.statements]);
+ assert.equal(s.db.prepare("SELECT COUNT(*) n FROM customers").get().n,1);
+ assert.equal(s.db.prepare("SELECT COUNT(*) n FROM invoices").get().n,2);
+ assert.equal(s.db.prepare("SELECT COUNT(*) n FROM products WHERE owner_user_id='company-one'").get().n,1);
+});
