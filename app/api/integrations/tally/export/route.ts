@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getRawDb } from "../../../../../db";
 import { getChatGPTUser } from "../../../../company-auth";
 import { CORE_ACCOUNTS } from "../../../../lib/accounting";
-import { exportVoucher, type ExportLine, type ExportItem, type ExportSource } from "../../../../lib/tally-export";
+import { exportVoucher, ledgerResolver, type ExportLine, type ExportItem, type ExportSource } from "../../../../lib/tally-export";
 import { tallyEnvelope, xmlEscape } from "../../../../lib/tally";
 import { todayIST } from "../../../../lib/date";
 
@@ -79,6 +79,9 @@ export async function GET(request: Request) {
         WHERE je.owner_user_id=? AND je.status='posted' AND je.source_type NOT LIKE 'tally_%' AND je.source_type NOT LIKE 'demo_seed_%' AND je.entry_date BETWEEN ? AND ? ORDER BY je.entry_date,je.id`).bind(user.id, from, to).all<Line>(),
     ]);
     const lines = lineResult.results as Line[];
+    // Use the company's own ledger names (synced from Tally) so vouchers post without importing Commons' generic ledgers.
+    const masterRows = await raw.prepare("SELECT name,top_group FROM tally_masters WHERE owner_user_id=? AND kind='ledger'").bind(user.id).all<{ name: string; top_group: string | null }>();
+    const exportOptions = { resolve: ledgerResolver(masterRows.results), dropInternalStock: !itemMode };
     try{for(const entry of entryResult.results as Entry[]){
       let source:ExportSource|undefined,items:ExportItem[]=[];
       if(entry.source_type==="sales_invoice"){
@@ -93,7 +96,7 @@ export async function GET(request: Request) {
         const payment=await raw.prepare("SELECT customer_name party,invoice_number reference FROM invoice_payments WHERE owner_user_id=? AND id=?").bind(user.id,entry.source_id).first<{party:string;reference:string}>();
         if(!payment)throw Error("Receipt allocation is missing for "+entry.entry_number);source={...payment,number:entry.entry_number,billType:"Agst Ref"};
       }
-      messages.push(exportVoucher(entry,lines.filter(line=>line.entry_id===entry.id) as ExportLine[],source,items));
+      messages.push(exportVoucher(entry,lines.filter(line=>line.entry_id===entry.id) as ExportLine[],source,items,exportOptions));
     }}catch(error){return NextResponse.json({message:error instanceof Error?error.message:"Export could not be validated."},{status:409});}
   }
   const body = tallyEnvelope(company, messages, scope === "masters" ? "All Masters" : "Vouchers");

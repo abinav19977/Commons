@@ -41,7 +41,9 @@ export async function POST(request:Request){
   await raw.prepare("UPDATE tally_transfers SET status='reconcile',updated_at=? WHERE id=? AND owner_user_id=? AND direction='out' AND status IN ('sending','uncertain')").bind(Date.now(),String(body.transfer||""),user.id).run();return reply("Delivery check queued. The connector will check Tally without posting again.",200);
  }
  if(body.action==="retry"){
-  await raw.prepare("UPDATE tally_transfers SET status='pending',message=NULL,updated_at=? WHERE id=? AND owner_user_id=? AND direction='out' AND status='blocked'").bind(Date.now(),String(body.transfer||""),user.id).run();return reply("Blocked transfer queued for another attempt.",200);
+  // A blocked voucher was never posted, so drop it and let "Review outgoing vouchers" rebuild it:
+  // resending the stored XML would repeat the same ledger names that got it blocked.
+  await raw.prepare("DELETE FROM tally_transfers WHERE id=? AND owner_user_id=? AND direction='out' AND status='blocked'").bind(String(body.transfer||""),user.id).run();return reply("Cleared. Choose the date range and review outgoing vouchers again to resend it with your current Tally ledger names.",200);
  }
  if(body.action==="import_queue"){
   if(body.confirmation!=="IMPORT TALLY")return reply("Confirm the import first.");

@@ -196,22 +196,38 @@ def signature(voucher):
         match = re.fullmatch(r"(-?\d+(?:\.\d+)?)\s+(.+)", text)
         if not match: raise ValueError("Unsupported quantity returned by Tally.")
         return (Decimal(match[1]), clean(match[2]))
+    # TallyPrime often returns the same lines under both an "ALL..." tag and its plain
+    # counterpart (the plain one can be a partial subset), plus empty placeholder tags.
+    # Use the first tag that actually has content; adding them all makes every voucher
+    # look different from what was sent.
+    def first_populated(tags, key):
+        for tag in tags:
+            found = [n for n in voucher.findall(tag) if clean(n.findtext(key))]
+            if found: return found
+        return []
     ledgers = []
-    for tag in ["ALLLEDGERENTRIES.LIST", "LEDGERENTRIES.LIST"]:
-        for entry in voucher.findall(tag):
-            bills = sorted((clean(b.findtext("NAME")), clean(b.findtext("BILLTYPE")).lower(), amount(b)) for b in entry.findall("BILLALLOCATIONS.LIST"))
-            ledgers.append((clean(entry.findtext("LEDGERNAME")), amount(entry), tuple(bills)))
+    for entry in first_populated(["ALLLEDGERENTRIES.LIST", "LEDGERENTRIES.LIST"], "LEDGERNAME"):
+        bills = sorted((clean(b.findtext("NAME")), clean(b.findtext("BILLTYPE")).lower(), amount(b)) for b in entry.findall("BILLALLOCATIONS.LIST") if clean(b.findtext("NAME")))
+        ledgers.append((clean(entry.findtext("LEDGERNAME")), amount(entry), tuple(bills)))
     items = []
-    for tag in ["ALLINVENTORYENTRIES.LIST", "INVENTORYENTRIES.LIST", "INVENTORYENTRIESIN.LIST", "INVENTORYENTRIESOUT.LIST"]:
-        for item in voucher.findall(tag):
-            allocations = sorted((clean(a.findtext("LEDGERNAME")), amount(a)) for a in item.findall("ACCOUNTINGALLOCATIONS.LIST"))
-            batches = sorted((clean(b.findtext("GODOWNNAME")), clean(b.findtext("BATCHNAME")), quantity(b,"ACTUALQTY") or quantity(b,"BILLEDQTY"), amount(b), clean(b.findtext("MFDON")), clean(b.findtext("EXPIRYPERIOD"))) for b in item.findall("BATCHALLOCATIONS.LIST"))
-            actual = quantity(item,"ACTUALQTY") or quantity(item,"BILLEDQTY")
-            billed = quantity(item,"BILLEDQTY") or actual
-            items.append((clean(item.findtext("STOCKITEMNAME")), actual, billed, amount(item), tuple(allocations), tuple(batches)))
+    for item in first_populated(["ALLINVENTORYENTRIES.LIST", "INVENTORYENTRIES.LIST", "INVENTORYENTRIESIN.LIST", "INVENTORYENTRIESOUT.LIST"], "STOCKITEMNAME"):
+        allocations = sorted((clean(a.findtext("LEDGERNAME")), amount(a)) for a in item.findall("ACCOUNTINGALLOCATIONS.LIST"))
+        batches = sorted((clean(b.findtext("GODOWNNAME")), clean(b.findtext("BATCHNAME")), quantity(b,"ACTUALQTY") or quantity(b,"BILLEDQTY"), amount(b), clean(b.findtext("MFDON")), clean(b.findtext("EXPIRYPERIOD"))) for b in item.findall("BATCHALLOCATIONS.LIST"))
+        actual = quantity(item,"ACTUALQTY") or quantity(item,"BILLEDQTY")
+        billed = quantity(item,"BILLEDQTY") or actual
+        items.append((clean(item.findtext("STOCKITEMNAME")), actual, billed, amount(item), tuple(allocations), tuple(batches)))
     fields = tuple(clean(voucher.findtext(tag)) for tag in ["DATE","VOUCHERTYPENAME","VOUCHERNUMBER","PARTYLEDGERNAME","PARTYGSTIN","PLACEOFSUPPLY","REFERENCE"])
     flags = tuple(clean(voucher.findtext(tag)).lower()=="yes" for tag in ["ISCANCELLED","ISOPTIONAL"])
     return (fields, flags, sorted(ledgers), sorted(items))
+
+def describe_difference(sent, stored):
+    """Say which part of a voucher Tally stored differently (names and amounts only)."""
+    parts = []
+    if sent[0] != stored[0]: parts.append("header fields sent %s, Tally has %s" % (sent[0], stored[0]))
+    if sent[1] != stored[1]: parts.append("cancelled/optional flags differ")
+    if sent[2] != stored[2]: parts.append("ledger lines sent %s, Tally has %s" % ([(n, str(a)) for n, a, _ in sent[2]], [(n, str(a)) for n, a, _ in stored[2]]))
+    if sent[3] != stored[3]: parts.append("stock items differ")
+    return "; ".join(parts)[:600] or "unknown difference"
 
 class Transport:
     def __init__(self, token, port=9000):
@@ -374,7 +390,7 @@ class Connector:
             found = find_existing()
             if found:
                 if len(found) != 1 or signature(found[0]) != signature(voucher):
-                    return "uncertain", "The voucher identifier exists in Tally with different values. Review it manually."
+                    return "uncertain", "The voucher exists in Tally but differs: " + describe_difference(signature(voucher), signature(found[0]))
                 return "sent", "Verified in Tally. No duplicate was created."
             if job.get("checkOnly"):
                 return "uncertain", "Voucher not found in the paired Tally company. No automatic repost was attempted."
@@ -397,8 +413,10 @@ class Connector:
             if result.findtext(".//CREATED") != "1" or int(result.findtext(".//ERRORS") or "0"):
                 return "uncertain", "Tally did not confirm exactly one created voucher. Check delivery."
             found = find_existing()
-            if len(found) != 1 or signature(found[0]) != signature(voucher):
-                return "uncertain", "Tally accepted the request but read-back verification failed. Check delivery."
+            if len(found) != 1:
+                return "uncertain", "Tally accepted the request but the voucher could not be read back. Check delivery."
+            if signature(found[0]) != signature(voucher):
+                return "uncertain", "Tally accepted the request but stored it differently: " + describe_difference(signature(voucher), signature(found[0]))
             return "sent", "Created and verified in Tally."
         except Exception as error:
             return ("uncertain" if attempted or job.get("checkOnly") else "blocked"), str(error)[:400]

@@ -5,7 +5,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
 const cache={};function load(file){file=path.resolve(file);if(cache[file])return cache[file];const exports={};cache[file]=exports;vm.runInNewContext(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,TextEncoder,require(name){return load(path.resolve(path.dirname(file),name)+'.ts');}});return exports;}
-const {exportVoucher}=load('app/lib/tally-export.ts'),{parseXml,descendants,documentFromNode}=load('app/lib/tally-document.ts');
+const {exportVoucher,ledgerResolver}=load('app/lib/tally-export.ts'),{parseXml,descendants,documentFromNode}=load('app/lib/tally-document.ts');
 const entry={id:'id-one',entry_number:'J-1',entry_date:'2026-09-10',source_type:'sales_invoice',description:'Test sale'};
 const line=(code,debit,credit)=>({entry_id:entry.id,account_code:code,account_name:{1100:'Customer money due',4000:'Sales',2100:'GST payable'}[code]||code,tally_ledger:null,debit_paise:debit,credit_paise:credit});
 const lines=[line('1100',11800,0),line('4000',0,10000),line('2100',0,1800)];
@@ -15,3 +15,22 @@ test('outgoing sales preserve bill references, party identity and exact tax spli
 test('item invoices allocate revenue once and preserve quantity',()=>{const d=doc(exportVoucher(entry,lines,source,[{name:'Sheets',unit:'PCS',quantity_milli:2000,rate_paise:5000,taxable_paise:10000,hsn:'3920'}]));assert.equal(d.items[0].milli,2000);assert.equal(d.items[0].hsn,'3920');assert.equal(d.ledgers.reduce((sum,l)=>sum+l.amount,0),0);assert.equal(d.ledgers.filter(l=>l.name==='Sales').length,1);});
 test('receipt export uses Agst Ref without creating another sale',()=>{const d=doc(exportVoucher({...entry,source_type:'invoice_receipt'},[line('1000',5000,0),line('1100',0,5000)],{number:'R-1',party:'A & B',reference:'INV-1',billType:'Agst Ref'}));assert.equal(d.type,'Receipt');assert.equal(d.ledgers[1].bills[0].type,'Agst Ref');assert.equal(d.ledgers[1].bills[0].amount,5000);});
 test('imbalanced exports, tax disagreements and item mismatches fail before producing XML',()=>{assert.throws(()=>exportVoucher(entry,lines.slice(0,2),source),/Unbalanced/);assert.throws(()=>exportVoucher(entry,lines,{...source,cgst:0}),/GST components/);assert.throws(()=>exportVoucher(entry,lines,source,[{name:'Sheets',unit:'PCS',quantity_milli:1000,rate_paise:5000,taxable_paise:5000}]),/Item totals/);});
+
+const tallyLedgers=[{name:'A & B',top_group:'Sundry Debtors'},{name:'Gst Sales @18%',top_group:'Sales Accounts'},{name:'Gst Sales @12%',top_group:'Sales Accounts'},{name:'EXPORT GST SALES',top_group:'Sales Accounts'},{name:'Discount Allowed Sales',top_group:'Sales Accounts'},{name:'CGST',top_group:'Duties & Taxes'},{name:'SGST',top_group:'Duties & Taxes'},{name:'IGST',top_group:'Duties & Taxes'},{name:'INELIGIBLE IGST',top_group:'Duties & Taxes'}];
+const stockLines=[line('1100',11800,0),line('4000',0,10000),line('2100',0,1800),{...line('5100',6000,0),account_name:'Cost of goods sold'},{...line('1200',0,6000),account_name:'Stock on hand'}];
+test("outgoing sale uses the company's own Tally ledger names, so no Commons ledgers need importing",()=>{
+ const xml=exportVoucher(entry,stockLines,source,[],{resolve:ledgerResolver(tallyLedgers),dropInternalStock:true});
+ const names=descendants(parseXml(xml),'LEDGERNAME').map(n=>n.text);
+ assert.deepEqual(Array.from(names).sort(),['A & B','CGST','Gst Sales @18%','SGST'].sort());
+});
+test("Commons' internal cost/stock pair is not sent, and the voucher still balances",()=>{
+ const d=doc(exportVoucher(entry,stockLines,source,[],{resolve:ledgerResolver(tallyLedgers),dropInternalStock:true}));
+ assert.equal(d.ledgers.reduce((s,l)=>s+l.amount,0),0);
+ assert.equal(d.ledgers.length,4);
+});
+test('the sales ledger follows the bill GST rate, and falls back to the Commons name when Tally has none',()=>{
+ const twelve=exportVoucher(entry,[line('1100',11200,0),line('4000',0,10000),line('2100',0,1200)],{...source,cgst:600,sgst:600},[],{resolve:ledgerResolver(tallyLedgers),dropInternalStock:true});
+ assert.ok(descendants(parseXml(twelve),'LEDGERNAME').some(n=>n.text==='Gst Sales @12%'));
+ const none=exportVoucher(entry,lines,source,[],{resolve:ledgerResolver([]),dropInternalStock:true});
+ assert.ok(descendants(parseXml(none),'LEDGERNAME').some(n=>n.text==='Sales'));
+});
