@@ -3486,6 +3486,11 @@ h1 {
 .bridge-transfer { display: flex; justify-content: space-between; align-items: center; gap: 16px; border-top: 1px solid #252525; padding: 16px 0; }
 .bridge-transfer p { overflow-wrap: anywhere; color: #bdbdbd; font-size: 14px; }
 .bridge-secret,.bridge-review { padding: 18px; border: 1px solid #444; border-radius: 10px; margin: 16px 0; }
+/* Ledger-mapping dropdowns: black field, violet text (native selects otherwise render white). */
+.bridge-field select { width: 100%; background: #000; color: #b794f6; border: 1px solid #6d4fc2; padding: 12px; border-radius: 8px; font-size: 15px; color-scheme: dark; }
+.bridge-field select option { background: #000; color: #b794f6; }
+.bridge-field select:focus { outline: 2px solid #8b5cf6; outline-offset: 1px; }
+.bridge-field small { color: #9b8ac4; }
 .tally-panel button { cursor: pointer; background: #111; color: white; border: 1px solid #555; border-radius: 8px; padding: 10px 14px; font-size: 14px; }
 .tally-panel button:disabled { opacity: .45; cursor: default; }
 @media(max-width:600px){.bridge-transfer{align-items:stretch;flex-direction:column}}
