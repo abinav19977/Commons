@@ -24,7 +24,7 @@ export async function GET(request:Request){
  const queued=await raw.prepare("SELECT COUNT(*) c FROM tally_transfers WHERE owner_user_id=? AND direction='in' AND status='review'").bind(user.id).first<{c:number}>();
  return NextResponse.json({bridge,transfers:transfers.results,documents:documents.results,queued:queued?.c||0});
 }
-export async function POST(request:Request){
+async function handlePost(request:Request){
  const user=await getChatGPTUser(request);if(!user)return reply("Your company selection changed. Reload this page.",401);
  const body=await readBoundedJson(request).catch(()=>null);if(!body)return reply("Invalid request.");
  const raw=getRawDb();const bridge=await raw.prepare("SELECT * FROM tally_bridges WHERE owner_user_id=?").bind(user.id).first<Bridge>();
@@ -86,4 +86,11 @@ export async function POST(request:Request){
  if(selected.length!==body.reviewed.length || !selected.length)return reply("The vouchers changed or were already queued. Preview again.",409);
  await raw.batch(selected.map(v=>raw.prepare("INSERT OR IGNORE INTO tally_transfers(id,owner_user_id,bridge_id,direction,source_key,label,xml,digest,status,created_at,updated_at) VALUES (?,?,?,'out',?,?,?,?,'pending',?,?)").bind(crypto.randomUUID(),user.id,bridge.id,v.key,v.label,v.xml,v.digest,Date.now(),Date.now())));
  return reply(`${selected.length} approved vouchers queued. Keep the connector and TallyPrime open.`,200);
+}
+
+// An uncaught exception here otherwise surfaces as an empty 500, which the page can only
+// show as "Unexpected end of JSON input". Return the reason instead.
+export async function POST(request:Request){
+ try{return await handlePost(request);}
+ catch(error){console.error("Tally bridge action failed",error);return reply(error instanceof Error?"The request failed on the server: "+error.message.slice(0,240):"The request failed on the server.",500);}
 }
