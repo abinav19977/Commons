@@ -112,7 +112,10 @@ export async function prepareConnectedImport(owner:string,actor:string,xml:strin
  // (party debited) and a purchase voucher (party credited) with a real Round Off line.
  const partySign=partyLine&&partyLine.amount<0?-1:1;
  if(doc.items.length && (sale||purchase||credit||debit) && itemTotal+taxTotal-partySign*otherLedgerTotal!==total)issues.push("Item amounts, tax and other charges do not equal the party total.");
- if(taxTotal>total)issues.push("Tax exceeds the voucher total.");
+ // Only bills have a party total for the tax to be measured against. A journal (GST set-off,
+ // write-off, year-end entries) has no party line at all, so total is 0 and any GST-named ledger
+ // used to look like "tax exceeds total" -- which held back real journals on a live company.
+ if((sale||purchase||credit||debit)&&taxTotal>total)issues.push("Tax exceeds the voucher total.");
  const products=await raw.prepare("SELECT id,name,unit,purchase_price_paise FROM products WHERE owner_user_id=?").bind(owner).all<{id:string;name:string;unit:string;purchase_price_paise:number}>();
  const itemRows:(TallyDocument["items"][number]&{productId:string;qty:number;rate:number;itemTax:number;gstRate:number;cost:number})[]=[];
  for(const item of doc.items){

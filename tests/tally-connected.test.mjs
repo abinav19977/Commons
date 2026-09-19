@@ -272,3 +272,18 @@ test("opening balances are derived from Tally's closing minus imported vouchers,
  assert.deepEqual(Array.from(r.unexplained.map(u=>u.name)).sort(),["Rent","Sales"]);
  assert.equal(r.unexplainedTotal,40000);
 });
+
+test("a journal with GST-named ledgers (set-off, write-off, year-end) is not held for 'tax exceeds total'",async()=>{
+ const s=setup();
+ // No party line, so the party total is 0; the bill-only tax check used to flag any journal
+ // that touched an Input/Output CGST/SGST/IGST ledger.
+ const journal=`<VOUCHER><GUID>gst-setoff</GUID><ALTERID>1</ALTERID><DATE>20260331</DATE><VOUCHERTYPENAME>Journal</VOUCHERTYPENAME><VOUCHERNUMBER>7</VOUCHERNUMBER><ISCANCELLED>No</ISCANCELLED><ALLLEDGERENTRIES.LIST><LEDGERNAME>Output CGST</LEDGERNAME><AMOUNT>-100</AMOUNT></ALLLEDGERENTRIES.LIST><ALLLEDGERENTRIES.LIST><LEDGERNAME>Input CGST</LEDGERNAME><AMOUNT>100</AMOUNT></ALLLEDGERENTRIES.LIST></VOUCHER>`;
+ const result=await s.engine.prepareConnectedImport("company-one","accountant",journal);
+ assert.deepEqual(Array.from(result.issues),[]);
+ await s.raw.batch(result.statements);
+ assert.equal(s.db.prepare("SELECT COUNT(*) n FROM journal_entries WHERE source_type='tally_import'").get().n,1);
+ // A sale whose tax really exceeds its total is still caught.
+ const bad=invoice({guid:"bad-tax"}).replace("<ALLLEDGERENTRIES.LIST><LEDGERNAME>Sales</LEDGERNAME>","<ALLLEDGERENTRIES.LIST><LEDGERNAME>Output CGST</LEDGERNAME><AMOUNT>500</AMOUNT></ALLLEDGERENTRIES.LIST><ALLLEDGERENTRIES.LIST><LEDGERNAME>Sales</LEDGERNAME>");
+ const caught=await s.engine.prepareConnectedImport("company-one","accountant",bad);
+ assert.ok(caught.issues.some(i=>i.includes("Tax exceeds")||i.includes("do not equal")||i.includes("balanced")));
+});
