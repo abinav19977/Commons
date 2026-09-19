@@ -105,7 +105,7 @@ def voucher_types_xml(company=""):
     ET.SubElement(coll, "NATIVEMETHOD").text = "NAME"
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
-def masters_xml(kind, company=""):
+def masters_xml(kind, company="", start=None, end=None):
     """Export Group/Ledger/StockItem masters so Commons can auto-map ledgers by their
     Tally group and pre-fill stock-item unit/GST rate/cost, instead of needing a manual
     ledger-mapping spreadsheet for every company."""
@@ -118,6 +118,11 @@ def masters_xml(kind, company=""):
     ET.SubElement(variables, "SVEXPORTFORMAT").text = "$$SysName:XML"
     if company:
         ET.SubElement(variables, "SVCURRENTCOMPANY").text = company
+    if kind == "Ledger" and start and end:
+        # Balances are computed for this period, so opening = balance at books-start and
+        # closing = balance today -- the same figures a Tally trial balance shows.
+        ET.SubElement(variables, "SVFROMDATE").text = start.strftime("%Y%m%d")
+        ET.SubElement(variables, "SVTODATE").text = end.strftime("%Y%m%d")
     message = ET.SubElement(ET.SubElement(desc, "TDL"), "TDLMESSAGE")
     coll = ET.SubElement(message, "COLLECTION", {"NAME": "CommonsMasters" + kind, "ISMODIFY": "No"})
     ET.SubElement(coll, "TYPE").text = kind
@@ -125,8 +130,14 @@ def masters_xml(kind, company=""):
     # field exceeds the 4 MB response cap. Naming exactly the fields needed keeps each
     # StockItem record to a few KB instead of 20-30+ KB (confirmed: the full company's GST
     # detail fits in ~1 MB total this way, well under the cap, in under 6 seconds).
-    ET.SubElement(coll, "FETCH").text = "Name,Parent,Baseunits,Openingrate,Gstdetails" if kind == "StockItem" else "Name,Parent"
-    ET.SubElement(coll, "NATIVEMETHOD").text = "NAME,PARENT,BASEUNITS,OPENINGRATE,GSTDETAILS.LIST,STATEWISEDETAILS.LIST,RATEDETAILS.LIST" if kind == "StockItem" else "NAME,PARENT"
+    if kind == "StockItem":
+        fetch, native = "Name,Parent,Baseunits,Openingrate,Gstdetails", "NAME,PARENT,BASEUNITS,OPENINGRATE,GSTDETAILS.LIST,STATEWISEDETAILS.LIST,RATEDETAILS.LIST"
+    elif kind == "Ledger":
+        fetch, native = "Name,Parent,Openingbalance,Closingbalance", "NAME,PARENT,OPENINGBALANCE,CLOSINGBALANCE"
+    else:
+        fetch, native = "Name,Parent", "NAME,PARENT"
+    ET.SubElement(coll, "FETCH").text = fetch
+    ET.SubElement(coll, "NATIVEMETHOD").text = native
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 def company_collection_xml():
@@ -230,6 +241,20 @@ def signature(voucher):
     flags = tuple(clean(voucher.findtext(tag)).lower()=="yes" for tag in ["ISCANCELLED","ISOPTIONAL"])
     return (fields, flags, sorted(ledgers), sorted(items))
 
+def balance_paise(text):
+    """Tally ledger balance text to signed paise, credit-positive (Tally writes debits as
+    negative numbers; some builds append Dr/Cr instead)."""
+    from decimal import Decimal, InvalidOperation
+    text = (text or "").strip().replace(",", "")
+    if not text: return None
+    sign = 1
+    if text.lower().endswith("dr"): sign, text = -1, text[:-2].strip()
+    elif text.lower().endswith("cr"): sign, text = 1, text[:-2].strip()
+    try: value = Decimal(text)
+    except InvalidOperation: return None
+    if not value.is_finite(): return None
+    return int((value * sign * 100).to_integral_value())
+
 def describe_difference(sent, stored):
     """Say which part of a voucher Tally stored differently (names and amounts only)."""
     parts = []
@@ -317,10 +342,10 @@ class Transport:
                 return dt.date(int(raw_date[0:4]), int(raw_date[4:6]), int(raw_date[6:8]))
         return None
 
-    def masters(self, company):
+    def masters(self, company, start=None, end=None):
         return {
             "groups": self.tally(masters_xml("Group", company)).findall(".//GROUP"),
-            "ledgers": self.tally(masters_xml("Ledger", company)).findall(".//LEDGER"),
+            "ledgers": self.tally(masters_xml("Ledger", company, start, end)).findall(".//LEDGER"),
             "stockitems": self.tally(masters_xml("StockItem", company)).findall(".//STOCKITEM"),
         }
 
@@ -452,7 +477,12 @@ class Connector:
     def push_masters(self):
         """Send Tally's Group/Ledger/StockItem masters to Commons once per run so ledger
         mapping and stock-item GST rate/cost are resolved automatically instead of by hand."""
-        data = self.transport.masters(self.company)
+        try:
+            books_from = self.transport.books_from(self.company)
+        except Exception:
+            books_from = None
+        today = dt.date.today()
+        data = self.transport.masters(self.company, books_from, today)
         def field(node, name):
             child = node.find(name)
             return (child.text or "").strip() if child is not None and child.text else ""
@@ -498,7 +528,11 @@ class Connector:
             if not name:
                 continue
             parent = field(ledger, "PARENT")
-            ledgers.append({"name": name, "topGroup": top_group(parent) if parent else ""})
+            entry = {"name": name, "topGroup": top_group(parent) if parent else ""}
+            for key, tag in (("openingPaise", "OPENINGBALANCE"), ("closingPaise", "CLOSINGBALANCE")):
+                paise = balance_paise(field(ledger, tag))
+                if paise is not None: entry[key] = paise
+            ledgers.append(entry)
         def gst_rate_basis_points(node):
             # A stock item can carry several GSTDETAILS.LIST entries, one per date its
             # rate last changed (APPLICABLEFROM) -- only the most recent one is the rate
@@ -546,7 +580,7 @@ class Connector:
         # thousands of ledgers/stock items, so send them in bounded chunks.
         chunk = 250
         for i in range(0, len(ledgers), chunk):
-            self.call("masters", ledgers=ledgers[i:i + chunk], stockItems=[])
+            self.call("masters", ledgers=ledgers[i:i + chunk], stockItems=[], booksFrom=books_from.isoformat() if books_from else None)
         for i in range(0, len(stockitems), chunk):
             self.call("masters", ledgers=[], stockItems=stockitems[i:i + chunk])
 

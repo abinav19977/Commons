@@ -54,10 +54,12 @@ export async function POST(request:Request){
   // only when an actual voucher needs it (see prepareConnectedImport in tally-connected-import.ts),
   // so the business view only ever shows parties/items with real activity.
   const now=Date.now();const statements=[];
+  if(typeof body.booksFrom==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(body.booksFrom))statements.push(raw.prepare("INSERT INTO tally_masters(id,owner_user_id,kind,name,top_group,updated_at) VALUES (?,?,'meta','books_from',?,?) ON CONFLICT(owner_user_id,kind,name) DO UPDATE SET top_group=excluded.top_group,updated_at=excluded.updated_at").bind(crypto.randomUUID(),bridge.owner_user_id,body.booksFrom,now));
   for(const l of ledgers){
    if(typeof l?.name!=="string"||!l.name.trim()||l.name.length>200)continue;
    const topGroup=typeof l.topGroup==="string"&&l.topGroup.trim()?l.topGroup.trim().slice(0,200):null;
-   statements.push(raw.prepare("INSERT INTO tally_masters(id,owner_user_id,kind,name,top_group,unit,gst_rate_basis_points,cost_paise,updated_at) VALUES (?,?,'ledger',?,?,NULL,NULL,NULL,?) ON CONFLICT(owner_user_id,kind,name) DO UPDATE SET top_group=excluded.top_group,updated_at=excluded.updated_at").bind(crypto.randomUUID(),bridge.owner_user_id,l.name.trim().slice(0,200),topGroup,now));
+   const money=(v:unknown)=>typeof v==="number"&&Number.isSafeInteger(v)&&Math.abs(v)<1e13?v:null;
+   statements.push(raw.prepare("INSERT INTO tally_masters(id,owner_user_id,kind,name,top_group,unit,gst_rate_basis_points,cost_paise,opening_paise,closing_paise,updated_at) VALUES (?,?,'ledger',?,?,NULL,NULL,NULL,?,?,?) ON CONFLICT(owner_user_id,kind,name) DO UPDATE SET top_group=excluded.top_group,opening_paise=COALESCE(excluded.opening_paise,tally_masters.opening_paise),closing_paise=COALESCE(excluded.closing_paise,tally_masters.closing_paise),updated_at=excluded.updated_at").bind(crypto.randomUUID(),bridge.owner_user_id,l.name.trim().slice(0,200),topGroup,money(l.openingPaise),money(l.closingPaise),now));
   }
   for(const s of stockItems){
    if(typeof s?.name!=="string"||!s.name.trim()||s.name.length>200)continue;

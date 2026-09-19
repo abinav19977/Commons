@@ -5,6 +5,9 @@ import { digest,voucherBlocks,xmlTag, type Bridge,readBoundedJson } from "../../
 import { parseXml,descendants,accountingLedgerNodes,value,scaled } from "../../../../lib/tally-document";
 import { tallyEnvelope } from "../../../../lib/tally";
 import { CORE_ACCOUNTS } from "../../../../lib/accounting";
+import { assertPeriodOpen,prepareJournal } from "../../../../lib/book-server";
+import { resolveMasterLedgerCode,TALLY_LEDGER_MAP } from "../../../../lib/tally";
+import { openingEntry,reconcileLedgers,type MasterLedger } from "../../../../lib/tally-reconcile";
 import { prepareConnectedImport } from "../../../../lib/tally-connected-import";
 import { GET as exportXml } from "../export/route";
 // The connector can deliver hundreds of historical vouchers into the queue in minutes
@@ -13,9 +16,29 @@ import { GET as exportXml } from "../export/route";
 // single request stays inside the Worker's CPU/subrequest budget.
 const IMPORT_QUEUE_BATCH = 25;
 const reply=(message:string,status=400)=>NextResponse.json({message},{status});
+type MasterRow={name:string;top_group:string|null;opening_paise:number|null;closing_paise:number|null};
+async function loadBalances(raw:ReturnType<typeof getRawDb>,owner:string){
+ const masters=await raw.prepare("SELECT name,top_group,opening_paise,closing_paise FROM tally_masters WHERE owner_user_id=? AND kind='ledger'").bind(owner).all<MasterRow>();
+ const meta=await raw.prepare("SELECT top_group d FROM tally_masters WHERE owner_user_id=? AND kind='meta' AND name='books_from'").bind(owner).first<{d:string}>();
+ const saved=await raw.prepare("SELECT name,top_group code FROM tally_masters WHERE owner_user_id=? AND kind='mapping'").bind(owner).all<{name:string;code:string}>();
+ const ledgers:MasterLedger[]=masters.results.map(r=>({name:r.name,group:r.top_group,opening:r.opening_paise,closing:r.closing_paise}));
+ return {ledgers,booksFrom:meta?.d||null,saved:new Map(saved.results.map(r=>[r.name.toLowerCase().trim(),r.code]))};
+}
+
 export async function GET(request:Request){
  const user=await getChatGPTUser(request);if(!user)return reply("Select your company and sign in again.",401);
  const raw=getRawDb();const bridge=await raw.prepare("SELECT id,tally_name,tally_guid,last_seen,revoked,expires_at FROM tally_bridges WHERE owner_user_id=?").bind(user.id).first();
+ if(new URL(request.url).searchParams.get("reconcile")){
+  const {ledgers,booksFrom}=await loadBalances(raw,user.id);
+  const withBalances=ledgers.filter(l=>l.closing!==null);
+  const docs=await raw.prepare("SELECT json_extract(d.payload,'$.ledgers') l FROM tally_documents d WHERE d.owner_user_id=? AND d.rowid=(SELECT MAX(x.rowid) FROM tally_documents x WHERE x.owner_user_id=d.owner_user_id AND x.guid=d.guid) AND COALESCE(json_extract(d.payload,'$.cancelled'),0)=0").bind(user.id).all<{l:string|null}>();
+  const moved:{name:string;amount:number}[]=[];
+  for(const d of docs.results){try{for(const l of JSON.parse(d.l||"[]") as {name:string;amount:number}[])moved.push({name:l.name,amount:l.amount});}catch{}}
+  const posted=await raw.prepare("SELECT id FROM journal_entries WHERE owner_user_id=? AND source_type='tally_opening' AND status='posted' ORDER BY created_at DESC LIMIT 1").bind(user.id).first();
+  const result=reconcileLedgers(ledgers,moved,!!posted);
+  const opening=openingEntry(ledgers,()=>({code:"3100",name:"Opening balance equity"}));
+  return NextResponse.json({booksFrom,hasBalances:withBalances.length,openingsPosted:!!posted,openingLedgers:opening.ledgers,checked:result.checked,matched:result.matched,differing:result.differing,totalAbsDifference:result.totalAbsDifference,rows:result.rows.slice(0,40),vouchers:docs.results.length});
+ }
  const id=new URL(request.url).searchParams.get("inbox");
  const documentId=new URL(request.url).searchParams.get("document");
  if(documentId){const document=await raw.prepare("SELECT payload FROM tally_documents WHERE id=? AND owner_user_id=?").bind(documentId,user.id).first<{payload:string}>();return document?NextResponse.json({document:JSON.parse(document.payload)}):reply("Document not found.",404);}
@@ -60,6 +83,46 @@ async function handlePost(request:Request){
   const messages=entries.map(([name])=>`Map ledger “${name.trim()}”`);
   for(let i=0;i<messages.length;i+=80){const part=messages.slice(i,i+80);await raw.prepare(`UPDATE tally_transfers SET status='review',message=NULL,updated_at=? WHERE owner_user_id=? AND direction='in' AND status='needs_mapping' AND message IN (${part.map(()=>"?").join(",")})`).bind(Date.now(),user.id,...part).run();}
   return NextResponse.json({message:`${entries.length} ledger${entries.length===1?"":"s"} mapped. Their vouchers are back in the import queue.`});
+ }
+
+ if(body.action==="post_openings"){
+  if(body.confirmation!=="POST TALLY OPENINGS")return reply("Confirm the opening balances first.");
+  const {ledgers,booksFrom,saved}=await loadBalances(raw,user.id);
+  if(!booksFrom||!ledgers.some(l=>l.opening!==null))return reply("Tally's balances have not arrived yet. Open the connector and click Connect & start, then try again.",409);
+  const customers=await raw.prepare("SELECT id,display_name name FROM customers WHERE owner_user_id=?").bind(user.id).all<{id:string;name:string}>();
+  const suppliers=await raw.prepare("SELECT id,name FROM suppliers WHERE owner_user_id=?").bind(user.id).all<{id:string;name:string}>();
+  const partyIds=new Map<string,string>();
+  const partyStatements=[];
+  for(const l of ledgers){
+   const g=(l.group||"").toLowerCase();if(!l.opening||(g!=="sundry debtors"&&g!=="sundry creditors"))continue;
+   const customer=g==="sundry debtors",list=customer?customers.results:suppliers.results,found=list.find(r=>r.name===l.name);
+   const id=found?.id||"tp-"+(await digest(user.id+":"+(customer?"customer":"supplier")+":"+l.name)).slice(0,40);
+   partyIds.set(l.name,id);
+   if(!found)partyStatements.push(customer?raw.prepare("INSERT OR IGNORE INTO customers(id,owner_user_id,display_name,primary_phone,gst_registration_type,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").bind(id,user.id,l.name,"","unregistered",Date.now(),Date.now()):raw.prepare("INSERT OR IGNORE INTO suppliers(id,owner_user_id,name,primary_phone,gst_registration_type,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").bind(id,user.id,l.name,"","unregistered",Date.now(),Date.now()));
+  }
+  const names=new Map<string,string>(CORE_ACCOUNTS.map(a=>[a.code,a.name]));
+  const plan=openingEntry(ledgers,(name,group)=>{
+   const key=name.toLowerCase().trim(),g=(group||"").toLowerCase();
+   if(g==="sundry debtors")return {code:"1100",name:"Customer money due",party:{type:"customer" as const,id:partyIds.get(name)||"",name}};
+   if(g==="sundry creditors")return {code:"2000",name:"Supplier money due",party:{type:"supplier" as const,id:partyIds.get(name)||"",name}};
+   const custom=saved.get(key);
+   const code=(custom&&names.has(custom)?custom:undefined)||resolveMasterLedgerCode(name,group)||TALLY_LEDGER_MAP[key]?.code;
+   return code&&names.has(code)?{code,name:names.get(code)!}:undefined;
+  });
+  const fingerprint=(await digest(JSON.stringify(plan.lines))).slice(0,16),sourceId="tally-opening:"+fingerprint;
+  const newest=await raw.prepare("SELECT id,source_id FROM journal_entries WHERE owner_user_id=? AND source_type='tally_opening' AND status='posted' ORDER BY created_at DESC LIMIT 1").bind(user.id).first<{id:string;source_id:string}>();
+  if(newest?.source_id===sourceId)return NextResponse.json({message:"Tally's opening balances are already posted and unchanged.",already:true});
+  try{await assertPeriodOpen(user.id,booksFrom);}catch{return reply("The period the books start in is locked, so opening balances cannot be posted.",409);}
+  const statements=[...partyStatements];
+  if(newest){
+   const old=await raw.prepare("SELECT account_code,account_name,debit_paise,credit_paise,party_type,party_id,party_name FROM journal_lines WHERE owner_user_id=? AND entry_id=?").bind(user.id,newest.id).all<{account_code:string;account_name:string;debit_paise:number;credit_paise:number;party_type:string|null;party_id:string|null;party_name:string|null}>();
+   const reversal=await prepareJournal({ownerUserId:user.id,actor:user.email,entryDate:booksFrom,sourceType:"tally_opening_reversal",sourceId:newest.id+":"+fingerprint,description:"Replaced by updated Tally opening balances",lines:old.results.map(l=>({accountCode:l.account_code,accountName:l.account_name,debitPaise:l.credit_paise,creditPaise:l.debit_paise,...(l.party_id?{partyType:l.party_type as "customer"|"supplier",partyId:l.party_id,partyName:l.party_name||""}:{})}))});
+   statements.push(...reversal.statements);
+  }
+  const journal=await prepareJournal({ownerUserId:user.id,actor:user.email,entryDate:booksFrom,sourceType:"tally_opening",sourceId,description:"Opening balances from Tally",lines:plan.lines});
+  statements.push(...journal.statements);
+  for(let i=0;i<statements.length;i+=100)await raw.batch(statements.slice(i,i+100));
+  return NextResponse.json({message:`Opening balances from Tally posted for ${plan.ledgers} ledgers, dated ${booksFrom}.${plan.unmapped.length?` ${plan.unmapped.length} had no account and went to Opening balance equity.`:""}`,ledgers:plan.ledgers,unmapped:plan.unmapped.slice(0,20),balancingPaise:plan.balancingPaise});
  }
  if(body.action==="import_queue"){
   if(body.confirmation!=="IMPORT TALLY")return reply("Confirm the import first.");

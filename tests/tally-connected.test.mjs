@@ -219,3 +219,35 @@ test("broad Tally groups and TDS/GST names resolve to Commons accounts without a
  assert.equal(r("Unknown","Suspense A/c"),undefined);
  assert.equal(r("Petty Cash","Cash-in-Hand"),"1000");
 });
+
+test("reconciliation compares Tally's closing balance with opening + imported vouchers, ledger by ledger",()=>{
+ const s=setup();const {reconcileLedgers}=s.load("app/lib/tally-reconcile.ts");
+ // Tally convention: negative = debit. Bank opened at 1,000 Dr and received 500 Dr in a voucher.
+ const masters=[{name:"Bank",group:"Bank Accounts",opening:-100000,closing:-150000},{name:"Sales",group:"Sales Accounts",opening:0,closing:50000},{name:"Rent",group:"Indirect Expenses",opening:0,closing:-20000}];
+ const vouchers=[{name:"Bank",amount:-50000},{name:"sales ",amount:50000},{name:"Rent",amount:-10000}];
+ const withOpening=reconcileLedgers(masters,vouchers,true);
+ assert.equal(withOpening.checked,3);assert.equal(withOpening.matched,2);assert.equal(withOpening.differing,1);
+ assert.equal(withOpening.rows[0].name,"Rent");assert.equal(withOpening.rows[0].diff,-10000);
+ // Without the opening entry posted, Bank is short by exactly its opening balance.
+ const without=reconcileLedgers(masters,vouchers,false);
+ assert.ok(without.rows.some(r=>r.name==="Bank"&&r.diff===-100000));
+});
+
+test("opening-balance entry always balances, keeps debtor/creditor parties, and parks unmapped ledgers in opening equity",()=>{
+ const s=setup();const {openingEntry}=s.load("app/lib/tally-reconcile.ts");
+ const masters=[
+  {name:"Cash",group:"Cash-in-Hand",opening:-30000,closing:null},
+  {name:"Capital",group:"Capital Account",opening:100000,closing:null},
+  {name:"Om Traders",group:"Sundry Debtors",opening:-50000,closing:null},
+  {name:"Mystery",group:"Suspense A/c",opening:-20000,closing:null},
+  {name:"Kerala Polymers",group:"Sundry Creditors",opening:0,closing:null}];
+ const plan=openingEntry(masters,(name,group)=>({"Cash":{code:"1000",name:"Cash in hand"},"Capital":{code:"3000",name:"Owner's capital"},"Om Traders":{code:"1100",name:"Customer money due",party:{type:"customer",id:"p1",name:"Om Traders"}}}[name]));
+ assert.equal(plan.ledgers,4);assert.equal(plan.unmapped.length,1);assert.equal(plan.unmapped[0].name,"Mystery");
+ const debit=plan.lines.reduce((t,l)=>t+l.debitPaise,0),credit=plan.lines.reduce((t,l)=>t+l.creditPaise,0);
+ assert.equal(debit,credit);
+ assert.ok(plan.lines.some(l=>l.accountCode==="1100"&&l.partyId==="p1"&&l.debitPaise===50000));
+ // Tally openings that don't net to zero are balanced through Opening balance equity, never dropped.
+ const lopsided=openingEntry([{name:"Cash",group:"Cash-in-Hand",opening:-30000,closing:null}],()=>({code:"1000",name:"Cash in hand"}));
+ assert.equal(lopsided.balancingPaise,30000);
+ assert.equal(lopsided.lines.reduce((t,l)=>t+l.debitPaise,0),lopsided.lines.reduce((t,l)=>t+l.creditPaise,0));
+});

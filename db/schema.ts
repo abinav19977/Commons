@@ -68,6 +68,8 @@ export const tallyMasters=sqliteTable("tally_masters",{
  id:text("id").primaryKey(),ownerUserId:text("owner_user_id").notNull(),
  kind:text("kind").notNull(),name:text("name").notNull(),topGroup:text("top_group"),
  unit:text("unit"),gstRateBasisPoints:integer("gst_rate_basis_points"),costPaise:integer("cost_paise"),
+ // Tally ledger balances at books-start and today, credit-positive (Tally: negative = debit).
+ openingPaise:integer("opening_paise"),closingPaise:integer("closing_paise"),
  updatedAt:integer("updated_at").notNull(),
 },t=>[uniqueIndex("idx_tally_masters_owner_kind_name").on(t.ownerUserId,t.kind,t.name)]);
 

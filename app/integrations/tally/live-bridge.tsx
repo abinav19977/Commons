@@ -5,6 +5,7 @@ import { todayIST } from "@/app/lib/date";
 import { CORE_ACCOUNTS } from "@/app/lib/accounting";
 import DocumentHistory from "./document-history";
 type Transfer={id:string;direction:string;label:string;status:string;message:string|null;updated_at:number};
+type Recon={booksFrom:string|null;hasBalances:number;openingsPosted:boolean;openingLedgers:number;checked:number;matched:number;differing:number;totalAbsDifference:number;rows:{name:string;group:string|null;tally:number;commons:number;diff:number}[];vouchers:number};
 type State={bridge:null|{tally_name:string;tally_guid:string|null;last_seen:number|null;revoked:number;expires_at:number};transfers:Transfer[];documents?:{id:string;kind:string;created_at:number;revision:string}[];queued?:number;unmapped?:{name:string;count:number}[]};
 export default function LiveBridge({onReview}:{onReview:(xml:string,name:string)=>void}){
  const [data,setData]=useState<State>({bridge:null,transfers:[]});const [name,setName]=useState("");const [token,setToken]=useState("");const [message,setMessage]=useState("");const [busy,setBusy]=useState(false);const [now,setNow]=useState(()=>Date.now());
@@ -40,6 +41,20 @@ export default function LiveBridge({onReview}:{onReview:(xml:string,name:string)
   catch(e){setMessage(e instanceof Error?e.message:"Could not save.");}
   setBusy(false);
  }
+ const [recon,setRecon]=useState<Recon|null>(null);
+ const drcr=(p:number)=>`₹${Math.abs(p/100).toLocaleString("en-IN",{minimumFractionDigits:2})} ${p<0?"Dr":"Cr"}`;
+ async function checkTally(){
+  setBusy(true);setMessage("Comparing with Tally…");
+  try{const response=await companyFetch("/api/integrations/tally/bridge?reconcile=1");const body=await response.json();if(!response.ok)throw Error(body.message);setRecon(body);setMessage("");}
+  catch(e){setMessage(e instanceof Error?e.message:"Could not compare.");}
+  setBusy(false);
+ }
+ async function postOpenings(){
+  setBusy(true);setMessage("Posting opening balances…");
+  try{const response=await companyFetch("/api/integrations/tally/bridge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"post_openings",confirmation:"POST TALLY OPENINGS"})});const body=await response.json();if(!response.ok)throw Error(body.message);setMessage(body.message);}
+  catch(e){setMessage(e instanceof Error?e.message:"Could not post.");}
+  setBusy(false);await checkTally();
+ }
  const bridge=data.bridge;const online=!!bridge?.last_seen&&now-bridge.last_seen<90000&&!bridge.revoked&&bridge.expires_at>now;
  return <section className="tally-panel"><div className="tally-panel-heading"><div><span>Windows connector</span><h2>Connect your TallyPrime company</h2></div><strong>{online?"Connector online":bridge?.revoked?"Disconnected":"Waiting for connector"}</strong></div>
  <p className="tally-note">Outgoing transfers send approved accounting vouchers. Supported incoming sales, purchases and receipts update Business and Accounting together, including stock and supplied batch allocations. Revisions and cancellations need review. Statutory filing, outbound inventory and physical deletions are not automated.</p>
@@ -54,6 +69,16 @@ export default function LiveBridge({onReview}:{onReview:(xml:string,name:string)
  {preview&&<div className="bridge-review"><p>{preview.length} new vouchers</p>{preview.map(v=><p key={v.key}>{v.date} · {v.label} · ₹{(v.amountPaise/100).toLocaleString("en-IN",{minimumFractionDigits:2})}</p>)}{!!preview.length&&<button disabled={busy} onClick={()=>act("queue",{reviewed:preview,confirmation:"SEND TO TALLY"})}>Approve & send these {preview.length} vouchers</button>}</div>}
  {message&&<p role="status" className="directory-notice">{message}</p>}
  <h3>Transfer activity</h3><p className="tally-note">The latest 100 transfers are shown. “Delivery uncertain” means a confirmation was lost; checking delivery never posts again.</p>
+ <div className="bridge-review"><h3>Match with Tally</h3><p className="tally-note">Compares every ledger's closing balance in Tally with what Commons holds (opening balance plus imported vouchers). Where they agree, your books match Tally exactly.</p>
+ <button disabled={busy||!bridge} onClick={checkTally}>Check against Tally</button>
+ {recon&&<div>
+  {!recon.hasBalances&&<p className="tally-note">Tally's balances haven't arrived yet. In the connector click <b>Connect &amp; start</b> (use the latest connector) and check again.</p>}
+  {recon.hasBalances>0&&<p><b>{recon.matched} of {recon.checked}</b> ledgers match Tally{recon.differing>0?` · ${recon.differing} differ (total gap ${drcr(recon.totalAbsDifference).replace(/ (Dr|Cr)$/,"")})`:" — everything agrees"}.</p>}
+  {recon.hasBalances>0&&!recon.openingsPosted&&recon.openingLedgers>0&&<div><p className="tally-note">Tally's opening balances ({recon.openingLedgers} ledgers, as at {recon.booksFrom}) are not in Commons yet. Until they are, balance sheet figures will be short of Tally's.</p><button disabled={busy} onClick={postOpenings}>Post Tally opening balances</button></div>}
+  {recon.openingsPosted&&<p className="tally-note">Tally's opening balances are posted (as at {recon.booksFrom}).</p>}
+  {recon.rows.length>0&&<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}><thead><tr><th align="left">Ledger</th><th align="right">Tally</th><th align="right">Commons</th><th align="right">Difference</th></tr></thead><tbody>{recon.rows.map(r=><tr key={r.name} style={{borderTop:"1px solid #252525"}}><td>{r.name}</td><td align="right">{drcr(r.tally)}</td><td align="right">{drcr(r.commons)}</td><td align="right">{drcr(r.diff)}</td></tr>)}</tbody></table>{recon.differing>recon.rows.length&&<p className="tally-note">Showing the {recon.rows.length} largest differences.</p>}</div>}
+ </div>}
+ </div>
  {!!data.unmapped?.length&&<div className="bridge-review"><h3>{data.unmapped.length} ledger{data.unmapped.length===1?"":"s"} need an account type</h3><p className="tally-note">Tally files these under groups Commons can't classify on its own. Pick the closest Commons account once for each and every voucher waiting on it is imported. Your accountant can refine the choices later.</p>
  {data.unmapped.map(u=><label className="bridge-field" key={u.name}>{u.name} <small>· blocks {u.count} voucher{u.count===1?"":"s"}</small><select value={mapChoice[u.name]??suggest(u.name)} onChange={e=>setMapChoice(c=>({...c,[u.name]:e.target.value}))}><option value="">Choose account…</option>{CORE_ACCOUNTS.map(a=><option value={a.code} key={a.code}>{a.code} · {a.name}</option>)}</select></label>)}
  <button disabled={busy} onClick={saveMappings}>Save choices</button></div>}

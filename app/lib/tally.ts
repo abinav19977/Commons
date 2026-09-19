@@ -38,6 +38,8 @@ export const TALLY_LEDGER_MAP: Record<string, { code: string; name: string }> = 
   "owner's capital": { code: "3000", name: "Owner's capital" },
   "capital account": { code: "3000", name: "Owner's capital" },
   "opening balance equity": { code: "3100", name: "Opening balance equity" },
+  "profit & loss a/c": { code: "3200", name: "Retained earnings" },
+  "profit and loss a/c": { code: "3200", name: "Retained earnings" },
   "sales": { code: "4000", name: "Sales" },
   "sales accounts": { code: "4000", name: "Sales" },
   "other income": { code: "4010", name: "Other income" },
