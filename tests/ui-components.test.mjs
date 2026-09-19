@@ -147,6 +147,17 @@ test("transfer progress window shows percent, an ETA from the whole run, live co
  assert.ok(done.includes("100%")&&done.includes("Done")&&done.includes("Close")&&!done.includes("Stop after this batch"));
 });
 
+test("colour reversal: a toggle in every page, an inline pre-paint script, and a root-level invert rule",async()=>{
+ const {default:ThemeToggle}=await vite.ssrLoadModule("/app/components/theme-toggle.tsx");
+ const html=renderToStaticMarkup(React.createElement(ThemeToggle));
+ assert.ok(html.includes("theme-toggle")&&html.includes(">Light<")&&html.includes("Switch to light colours"));
+ const layout=await readFile(path.join(root,"app/layout.tsx"),"utf8");
+ assert.ok(layout.includes("<ThemeToggle/>")&&layout.includes("suppressHydrationWarning")&&layout.includes('localStorage.getItem("commons-theme")'));
+ const css=await readFile(path.join(root,"app/globals.css"),"utf8");
+ assert.ok(css.includes('html[data-theme="light"] { filter: invert(1) hue-rotate(180deg)'));
+ assert.ok(css.includes('html[data-theme="light"] img'),"photos are reversed back to their real colours");
+});
+
 test("bookkeeping rejects unsafe precision, negative values and two-sided lines",async()=>{
  const {isBalanced}=await vite.ssrLoadModule("/app/lib/accounting.ts");
  for(const amount of [Infinity,NaN,0.1,Number.MAX_SAFE_INTEGER+1,-1])assert.equal(isBalanced([{debitPaise:amount,creditPaise:0},{debitPaise:0,creditPaise:amount}]),false);

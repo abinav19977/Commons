@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { getChatGPTUser } from "./company-auth";
 import CompanyContext from "./components/company-context";
+import ThemeToggle from "./components/theme-toggle";
 
 export const metadata: Metadata = {
   title: "Commons — Everything you need, in one place",
@@ -21,9 +22,9 @@ export default async function RootLayout({
   // every page renders through this layout, logged-in or not.
   const company = await getChatGPTUser().catch(() => null);
   return (
-    <html lang="en">
-      <head><meta name="commons-company" content={company?.id || ""}/></head>
-      <body className="antialiased">{company&&<CompanyContext name={company.companyName}/ >}{children}</body>
+    <html lang="en" suppressHydrationWarning>
+      <head><meta name="commons-company" content={company?.id || ""}/><script dangerouslySetInnerHTML={{__html:'try{if(localStorage.getItem("commons-theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}'}}/></head>
+      <body className="antialiased">{company&&<CompanyContext name={company.companyName}/ >}{children}<ThemeToggle/></body>
     </html>
   );
 }

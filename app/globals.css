@@ -3589,3 +3589,11 @@ input:focus,select:focus,textarea:focus { border-color:#bdbdbd!important;outline
 .progress-line { margin-top: 10px; color: #d8d8d8; font-size: 14px; }
 .progress-counts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0; color: #b794f6; font-size: 13px; }
 .progress-window button { cursor: pointer; background: #111; color: #fff; border: 1px solid #555; border-radius: 8px; padding: 8px 12px; font-size: 13px; }
+
+/* Light colours = the whole page reversed (white <-> black), applied at the root so nothing is missed.
+   Photos, logos and video are reversed a second time so they keep their real colours. */
+html[data-theme="light"] { filter: invert(1) hue-rotate(180deg); background: #fff; }
+html[data-theme="light"] img, html[data-theme="light"] video, html[data-theme="light"] canvas, html[data-theme="light"] [data-keep-colours] { filter: invert(1) hue-rotate(180deg); }
+.theme-toggle { position: fixed; left: 16px; bottom: 16px; z-index: 80; cursor: pointer; background: #111; color: #fff; border: 1px solid #6d4fc2; border-radius: 999px; padding: 9px 16px; font-size: 13px; letter-spacing: .02em; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
+.theme-toggle:hover { background: #1c1633; }
+@media print { html[data-theme="light"] { filter: none; } .theme-toggle { display: none; } }
