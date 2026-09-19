@@ -4,6 +4,7 @@ import { getRawDb } from "../../../../../db";
 import { digest,voucherBlocks,xmlTag, type Bridge,readBoundedJson } from "../../../../lib/tally-bridge";
 import { parseXml,descendants,accountingLedgerNodes,value,scaled } from "../../../../lib/tally-document";
 import { tallyEnvelope } from "../../../../lib/tally";
+import { CORE_ACCOUNTS } from "../../../../lib/accounting";
 import { prepareConnectedImport } from "../../../../lib/tally-connected-import";
 import { GET as exportXml } from "../export/route";
 // The connector can deliver hundreds of historical vouchers into the queue in minutes
@@ -22,7 +23,10 @@ export async function GET(request:Request){
  const transfers=await raw.prepare("SELECT id,direction,label,status,message,updated_at FROM tally_transfers WHERE owner_user_id=? ORDER BY updated_at DESC LIMIT 100").bind(user.id).all();
  const documents=await raw.prepare("SELECT id,guid,kind,revision,created_at FROM tally_documents WHERE owner_user_id=? ORDER BY created_at DESC LIMIT 50").bind(user.id).all();
  const queued=await raw.prepare("SELECT COUNT(*) c FROM tally_transfers WHERE owner_user_id=? AND direction='in' AND status='review'").bind(user.id).first<{c:number}>();
- return NextResponse.json({bridge,transfers:transfers.results,documents:documents.results,queued:queued?.c||0});
+ // Ledgers holding vouchers back only because Commons doesn't know their account type, with how many each blocks.
+ const blocked=await raw.prepare("SELECT message,COUNT(*) n FROM tally_transfers WHERE owner_user_id=? AND direction='in' AND status='needs_mapping' AND message LIKE 'Map ledger %' GROUP BY message ORDER BY n DESC LIMIT 120").bind(user.id).all<{message:string;n:number}>();
+ const unmapped=blocked.results.map(r=>({name:(r.message.match(/^Map ledger “(.+)”$/)||[])[1]||"",count:r.n})).filter(r=>r.name);
+ return NextResponse.json({bridge,transfers:transfers.results,documents:documents.results,queued:queued?.c||0,unmapped});
 }
 async function handlePost(request:Request){
  const user=await getChatGPTUser(request);if(!user)return reply("Your company selection changed. Reload this page.",401);
@@ -44,6 +48,18 @@ async function handlePost(request:Request){
   // A blocked voucher was never posted, so drop it and let "Review outgoing vouchers" rebuild it:
   // resending the stored XML would repeat the same ledger names that got it blocked.
   await raw.prepare("DELETE FROM tally_transfers WHERE id=? AND owner_user_id=? AND direction='out' AND status='blocked'").bind(String(body.transfer||""),user.id).run();return reply("Cleared. Choose the date range and review outgoing vouchers again to resend it with your current Tally ledger names.",200);
+ }
+
+ if(body.action==="map_ledgers"){
+  const allowed=new Set<string>(CORE_ACCOUNTS.map(a=>a.code));
+  const entries=Object.entries(body.mappings&&typeof body.mappings==="object"?body.mappings as Record<string,unknown>:{}).filter(([name,code])=>name.trim()&&name.length<=200&&typeof code==="string"&&allowed.has(code)).slice(0,120);
+  if(!entries.length)return reply("Choose an account for at least one ledger.");
+  const now=Date.now();
+  await raw.batch(entries.map(([name,code])=>raw.prepare("INSERT INTO tally_masters(id,owner_user_id,kind,name,top_group,updated_at) VALUES (?,?,'mapping',?,?,?) ON CONFLICT(owner_user_id,kind,name) DO UPDATE SET top_group=excluded.top_group,updated_at=excluded.updated_at").bind(crypto.randomUUID(),user.id,name.trim(),code,now)));
+  // Put the vouchers that were waiting on exactly these ledgers back in the import queue.
+  const messages=entries.map(([name])=>`Map ledger “${name.trim()}”`);
+  for(let i=0;i<messages.length;i+=80){const part=messages.slice(i,i+80);await raw.prepare(`UPDATE tally_transfers SET status='review',message=NULL,updated_at=? WHERE owner_user_id=? AND direction='in' AND status='needs_mapping' AND message IN (${part.map(()=>"?").join(",")})`).bind(Date.now(),user.id,...part).run();}
+  return NextResponse.json({message:`${entries.length} ledger${entries.length===1?"":"s"} mapped. Their vouchers are back in the import queue.`});
  }
  if(body.action==="import_queue"){
   if(body.confirmation!=="IMPORT TALLY")return reply("Confirm the import first.");

@@ -192,3 +192,16 @@ test("Tally voucher numbers that repeat (other financial year or series) import 
  await t.apply(invoice({guid:"s2"}).replace("<VOUCHERNUMBER>s2<","<VOUCHERNUMBER>s1<"));
  assert.equal(t.db.prepare("SELECT COUNT(DISTINCT invoice_number) n FROM invoices WHERE owner_user_id='company-one'").get().n,2);
 });
+
+test("an account the user chose for an unclassified ledger is remembered and lets its vouchers import",async()=>{
+ const s=setup();
+ const journal=`<VOUCHER><GUID>petty-1</GUID><ALTERID>1</ALTERID><DATE>20260909</DATE><VOUCHERTYPENAME>Journal</VOUCHERTYPENAME><VOUCHERNUMBER>1</VOUCHERNUMBER><ISCANCELLED>No</ISCANCELLED><ALLLEDGERENTRIES.LIST><LEDGERNAME>Petty Cash</LEDGERNAME><AMOUNT>-50</AMOUNT></ALLLEDGERENTRIES.LIST><ALLLEDGERENTRIES.LIST><LEDGERNAME>Sales</LEDGERNAME><AMOUNT>50</AMOUNT></ALLLEDGERENTRIES.LIST></VOUCHER>`;
+ const before=await s.engine.prepareConnectedImport("company-one","accountant",journal);
+ assert.ok(before.issues.some(i=>i.includes("Petty Cash")));
+ // Saved as kind 'mapping' (not 'ledger') so a later master sync cannot overwrite it.
+ s.db.prepare("INSERT INTO tally_masters(id,owner_user_id,kind,name,top_group,updated_at) VALUES (?,?,?,?,?,?)").run("m1","company-one","mapping","Petty Cash","1000",1);
+ const after=await s.engine.prepareConnectedImport("company-one","accountant",journal);
+ assert.deepEqual(Array.from(after.issues),[]);
+ await s.raw.batch(after.statements);
+ assert.equal(s.db.prepare("SELECT SUM(debit_paise) n FROM journal_lines WHERE account_code='1000'").get().n,5000);
+});

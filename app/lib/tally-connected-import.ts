@@ -55,6 +55,10 @@ export async function prepareConnectedImport(owner:string,actor:string,xml:strin
  const ledgerMasters=await raw.prepare("SELECT name,top_group topGroup FROM tally_masters WHERE owner_user_id=? AND kind='ledger'").bind(owner).all<{name:string;topGroup:string|null}>();
  const autoMappings:Record<string,string>={};
  for(const row of ledgerMasters.results){const code=resolveMasterLedgerCode(row.name,row.topGroup);if(code)autoMappings[row.name.toLowerCase().trim()]=code;}
+ // Account choices the user saved for ledgers Tally's own groups can't classify (kept as kind
+ // 'mapping' so a later master sync, which rewrites kind 'ledger' rows, never erases them).
+ const savedMappings=await raw.prepare("SELECT name,top_group code FROM tally_masters WHERE owner_user_id=? AND kind='mapping'").bind(owner).all<{name:string;code:string}>();
+ for(const row of savedMappings.results)if(/^\d{4}$/.test(row.code))autoMappings[row.name.toLowerCase().trim()]=row.code;
  const mergedMappings={...autoMappings,...mappings};
  const stockMasters=await raw.prepare("SELECT name,unit,gst_rate_basis_points gstRate,cost_paise costPaise FROM tally_masters WHERE owner_user_id=? AND kind='stockitem'").bind(owner).all<{name:string;unit:string|null;gstRate:number|null;costPaise:number|null}>();
  const stockMasterByName=new Map(stockMasters.results.map(r=>[r.name.toLowerCase().trim(),r]));

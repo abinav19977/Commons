@@ -2,9 +2,10 @@
 import { useEffect,useState } from "react";
 import { companyFetch } from "@/app/company-fetch";
 import { todayIST } from "@/app/lib/date";
+import { CORE_ACCOUNTS } from "@/app/lib/accounting";
 import DocumentHistory from "./document-history";
 type Transfer={id:string;direction:string;label:string;status:string;message:string|null;updated_at:number};
-type State={bridge:null|{tally_name:string;tally_guid:string|null;last_seen:number|null;revoked:number;expires_at:number};transfers:Transfer[];documents?:{id:string;kind:string;created_at:number;revision:string}[];queued?:number};
+type State={bridge:null|{tally_name:string;tally_guid:string|null;last_seen:number|null;revoked:number;expires_at:number};transfers:Transfer[];documents?:{id:string;kind:string;created_at:number;revision:string}[];queued?:number;unmapped?:{name:string;count:number}[]};
 export default function LiveBridge({onReview}:{onReview:(xml:string,name:string)=>void}){
  const [data,setData]=useState<State>({bridge:null,transfers:[]});const [name,setName]=useState("");const [token,setToken]=useState("");const [message,setMessage]=useState("");const [busy,setBusy]=useState(false);const [now,setNow]=useState(()=>Date.now());
  const [from,setFrom]=useState(todayIST());const [to,setTo]=useState(todayIST());
@@ -29,6 +30,16 @@ export default function LiveBridge({onReview}:{onReview:(xml:string,name:string)
   }catch(e){setMessage(e instanceof Error?e.message:"Import failed.");}
   await refresh();setBusy(false);
  }
+ const [mapChoice,setMapChoice]=useState<Record<string,string>>({});
+ const suggest=(name:string)=>/petty\s*cash|^cash/i.test(name)?"1000":"";
+ async function saveMappings(){
+  const mappings=Object.fromEntries((data.unmapped||[]).map(u=>[u.name,mapChoice[u.name]??suggest(u.name)]).filter(([,code])=>code));
+  if(!Object.keys(mappings).length){setMessage("Choose an account for at least one ledger first.");return;}
+  setBusy(true);setMessage("Saving…");
+  try{const response=await companyFetch("/api/integrations/tally/bridge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"map_ledgers",mappings})});const body=await response.json();if(!response.ok)throw Error(body.message);setMapChoice({});await refresh();setBusy(false);await importQueue();return;}
+  catch(e){setMessage(e instanceof Error?e.message:"Could not save.");}
+  setBusy(false);
+ }
  const bridge=data.bridge;const online=!!bridge?.last_seen&&now-bridge.last_seen<90000&&!bridge.revoked&&bridge.expires_at>now;
  return <section className="tally-panel"><div className="tally-panel-heading"><div><span>Windows connector</span><h2>Connect your TallyPrime company</h2></div><strong>{online?"Connector online":bridge?.revoked?"Disconnected":"Waiting for connector"}</strong></div>
  <p className="tally-note">Outgoing transfers send approved accounting vouchers. Supported incoming sales, purchases and receipts update Business and Accounting together, including stock and supplied batch allocations. Revisions and cancellations need review. Statutory filing, outbound inventory and physical deletions are not automated.</p>
@@ -43,6 +54,9 @@ export default function LiveBridge({onReview}:{onReview:(xml:string,name:string)
  {preview&&<div className="bridge-review"><p>{preview.length} new vouchers</p>{preview.map(v=><p key={v.key}>{v.date} · {v.label} · ₹{(v.amountPaise/100).toLocaleString("en-IN",{minimumFractionDigits:2})}</p>)}{!!preview.length&&<button disabled={busy} onClick={()=>act("queue",{reviewed:preview,confirmation:"SEND TO TALLY"})}>Approve & send these {preview.length} vouchers</button>}</div>}
  {message&&<p role="status" className="directory-notice">{message}</p>}
  <h3>Transfer activity</h3><p className="tally-note">The latest 100 transfers are shown. “Delivery uncertain” means a confirmation was lost; checking delivery never posts again.</p>
+ {!!data.unmapped?.length&&<div className="bridge-review"><h3>{data.unmapped.length} ledger{data.unmapped.length===1?"":"s"} need an account type</h3><p className="tally-note">Tally files these under groups Commons can't classify on its own. Pick the closest Commons account once for each and every voucher waiting on it is imported. Your accountant can refine the choices later.</p>
+ {data.unmapped.map(u=><label className="bridge-field" key={u.name}>{u.name} <small>· blocks {u.count} voucher{u.count===1?"":"s"}</small><select value={mapChoice[u.name]??suggest(u.name)} onChange={e=>setMapChoice(c=>({...c,[u.name]:e.target.value}))}><option value="">Choose account…</option>{CORE_ACCOUNTS.map(a=><option value={a.code} key={a.code}>{a.code} · {a.name}</option>)}</select></label>)}
+ <button disabled={busy} onClick={saveMappings}>Save choices</button></div>}
  {queued>0&&<div className="bridge-review"><p>{queued} voucher{queued===1?"":"s"} received from Tally and waiting to be posted to Business and Accounting.</p><button disabled={busy} onClick={importQueue}>Import all queued vouchers</button></div>}
  {!data.transfers.length&&<p>No transfers yet.</p>}{data.transfers.map(item=><article className="bridge-transfer" key={item.id}><div><strong>{item.direction==="in"?"From Tally":"To Tally"} · {item.label}</strong><p>{item.status==="uncertain"?"Delivery uncertain":item.status}{item.message?` · ${item.message}`:""}</p></div>{item.direction==="in"&&(item.status==="review"||item.status==="needs_mapping")&&<button disabled={busy} onClick={()=>review(item)}>Review voucher</button>}{item.direction==="out"&&["sending","uncertain"].includes(item.status)&&<button disabled={busy} onClick={()=>act("reconcile",{transfer:item.id})}>Check delivery</button>}{item.status==="blocked"&&<button disabled={busy} onClick={()=>act("retry",{transfer:item.id})}>Retry after fixing</button>}</article>)}
  <DocumentHistory documents={data.documents||[]}/>
